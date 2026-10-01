@@ -27,7 +27,7 @@ HOSTS = {
     "seuranta": [f"--directory={REMOTE_DIR}", "_HOSTNAME=seuranta"],
 }
 
-DEFAULT_STATE_DIR = "/var/lib/logfilter"
+DEFAULT_STATE_DIR = "./logfilter_state"
 
 # Window for the first normal run of a host (no saved cursor yet).
 INITIAL_SINCE = "24 hours ago"
