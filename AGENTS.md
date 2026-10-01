@@ -6,6 +6,12 @@
 
 A later stage will send these reports to a local LLM (Ollama native HTTP API on `localhost`). That stage does not exist yet. Do not add LLM, network, or HTTP code unless explicitly asked.
 
+## CLI
+
+- `hosts`: optional positional host names (default: all hosts in `HOSTS`).
+- `--since <window>`: preview mode for a time window using `journalctl --since` syntax.
+- `--state-dir <path>`: state storage root directory (default: `/var/lib/logfilter`).
+
 ## Environment
 
 - Runs on `palvelin` (openSUSE Tumbleweed), the central server.
@@ -20,13 +26,38 @@ A later stage will send these reports to a local LLM (Ollama native HTTP API on 
 - Python 3, standard library only. No third-party packages, no `python-systemd`, no other languages.
 - Read the journal only through `journalctl --output=json` via `subprocess`. Never parse `journalctl` text output: it is locale-dependent (palvelin prints Finnish month names such as `loka` and `syys`).
 - No databases. State is plain files in `/var/lib/logfilter/<host>/`:
-  - `cursor`: last processed journal cursor.
-  - `seen.json`: pattern keys already seen, with first-seen time.
+  - `cursor`: last processed journal cursor string.
+  - `seen.json`: pattern keys already seen, mapped to first-seen ISO timestamp string.
 - State is written atomically (temporary file + `os.replace`) and only after the report has been produced, so a failed run is repeated instead of skipped.
 - `--since` (preview mode) must never read the cursor or write any state. It may read `seen.json` to mark new patterns.
-- `RULES` are checked before `NOISE`. A rule match must always select the entry, even if it also matches a noise pattern. Keep this order.
-- Keep all tunable lists (`HOSTS`, `RULES`, `ALWAYS_INCLUDE`, `NOISE`, `EXTRA_NORMALIZERS`) and settings in the configuration section at the top of the file.
+- Filtering order must be strictly preserved:
+  1. `RULES`: match always selects entry, bypassing `NOISE` and priority limits.
+  2. `NOISE`: match drops entry if no rule matched (even if matching `ALWAYS_INCLUDE`).
+  3. Priority selection: entry is selected if `PRIORITY <= MAX_PRIORITY` or if it matches `ALWAYS_INCLUDE`.
+- Keep all configuration settings (`REMOTE_DIR`, `DEFAULT_STATE_DIR`, `INITIAL_SINCE`, `MAX_PRIORITY`) and tunable lists (`HOSTS`, `RULES`, `ALWAYS_INCLUDE`, `NOISE`, `EXTRA_NORMALIZERS`) in the configuration section at the top of the file.
 - Keep the project a single script unless asked otherwise.
+
+## Report format
+
+The downstream LLM stage parses the report format. Do not modify it unless explicitly requested.
+
+Structure per host:
+1. Header:
+   - `=== <host> ===`
+   - `mode: <mode description>`
+   - `range: <first_iso> -> <last_iso>` (or `range: no entries`)
+   - `entries read: <count>  (<prio_counts>)`
+   - `dropped as noise: <count>`
+   - `selected: <count> entries in <patterns_count> patterns (<rules_count> with rule matches, <new_count> new)`
+   - optional note if no saved patterns exist
+2. Blank line
+3. Patterns sorted by: has rule match (asc), is new (asc), minimum priority (asc), count (desc):
+   - `[rule:<name>]... [[NEW]] <priority_name> <source> x<count>  <first_iso> -> <last_iso>`
+   - `  pattern: <normalized_template>`
+   - `  example: <sample_message>`
+   - `  top IPs: <ip xcount, ...> (<distinct_count> distinct)` (omitted if no IPs)
+4. Footer:
+   - `report size: <char_count> characters`
 
 ## Scope and changes
 
@@ -42,6 +73,8 @@ Do not run the script against real journals, and do not create or modify anythin
 
 Test with a fake `journalctl`: an executable script named `journalctl` in a temporary directory that prints JSON lines (one journal entry per line, with fields such as `__CURSOR`, `__REALTIME_TIMESTAMP`, `PRIORITY`, `MESSAGE`, `SYSLOG_IDENTIFIER`, `_SYSTEMD_UNIT`, `_TRANSPORT`, `_HOSTNAME`). Put that directory first in `PATH` and use a temporary `--state-dir`.
 
+When invoking `logfilter.py` in tests, specify `palvelin` as a positional argument unless testing multi-host dispatch, to avoid unexpected calls for remote hosts.
+
 Cover at least:
 - normal mode: first run, then a second run continuing from the saved cursor
 - preview mode (`--since`): no state files written
@@ -49,11 +82,14 @@ Cover at least:
 - normalization of IPv4, IPv6, MAC, UUID, hex, numbers, timestamps
 - binary `MESSAGE` fields (JSON array of byte values) and repeated fields (JSON array of strings)
 
-Syntax check:
+Syntax check command:
 
 ```
 python3 -m py_compile logfilter.py
 ```
+- `python3`: Python interpreter executable.
+- `-m py_compile`: executes standard library module `py_compile` to compile source code to bytecode.
+- `logfilter.py`: target script file to check.
 
 ## Test data
 
@@ -64,7 +100,3 @@ Logs are sensitive. Never use real log content in tests, examples, or commit mes
 ## Communication
 
 - English only. Keep Finnish identifiers, hostnames, strings, and month names exactly as they appear.
-- Be concise and direct. No filler.
-- When giving commands, define every flag, option, and positional argument used.
-- Present code changes as complete functions or files, not as diffs.
-- Do not comment on intent, ethics, or best practices unless directly relevant to the task.
