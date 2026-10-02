@@ -10,7 +10,7 @@ A later stage will send these reports to a local LLM (Ollama native HTTP API on 
 
 - `hosts`: optional positional host names (default: all hosts in `HOSTS`).
 - `--since <window>`: preview mode for a time window using `journalctl --since` syntax.
-- `--state-dir <path>`: state storage root directory (default: `/var/lib/logfilter`).
+- `--state-dir <path>`: state storage root directory (default: `./logfilter_state`).
 
 ## Environment
 
@@ -25,7 +25,7 @@ A later stage will send these reports to a local LLM (Ollama native HTTP API on 
 
 - Python 3, standard library only. No third-party packages, no `python-systemd`, no other languages.
 - Read the journal only through `journalctl --output=json` via `subprocess`. Never parse `journalctl` text output: it is locale-dependent (palvelin prints Finnish month names such as `loka` and `syys`).
-- No databases. State is plain files in `/var/lib/logfilter/<host>/`:
+- No databases. State is plain files in `<state-dir>/<host>/` (default `./logfilter_state/<host>/`):
   - `cursor`: last processed journal cursor string.
   - `seen.json`: pattern keys already seen, mapped to first-seen ISO timestamp string.
 - State is written atomically (temporary file + `os.replace`) and only after the report has been produced, so a failed run is repeated instead of skipped.
