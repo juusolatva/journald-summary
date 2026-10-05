@@ -52,9 +52,6 @@ RULES = [
 
 # (SYSLOG_IDENTIFIER or None, regex): selected regardless of priority.
 ALWAYS_INCLUDE = [
-    (None, r"^Accepted \S+ for \S+ from"),  # successful SSH logins
-    (None, r"^(Invalid user|Failed \S+ for)"),  # failed SSH logins (logged at info)
-    (None, r"new user: |new group: |delete user |delete group |password changed for "),
     (None, r"^Startup finished in .*\(kernel\)"),  # system boots
 ]
 
@@ -65,12 +62,18 @@ NOISE = [
     (None, r"^WARNING: COMMAND_FAILED: .*DOCKER"),  # firewalld cleanup of Docker chains
     ("kernel", r"^ (\? )?[\w.]+\+0x[0-9a-f]+/0x[0-9a-f]+"),  # stack trace frames
     ("kernel", r"^ </?TASK>$"),
+    # memory info dump after a page allocation failure
+    ("kernel", r"^(Mem-Info:|active_anon:|Node \d+ |lowmem_reserve\[\]:|\d+ total pagecache pages|\d+ pages "
+               r"|Free swap |Total swap |Memory cgroup min protection )"),
+    (None, r"^/package/admin/s6-overlay/libexec/preinit: info: "),  # container startup
+    (None, r'^\{"level":"info"'),  # JSON info logs from containers (logged at err)
 ]
 
 # (regex, replacement): applied before the generic normalization below.
 EXTRA_NORMALIZERS = [
     (r"(?i)\b(invalid user) \S*", r"\1 <USER>"),
     (r"\bveth[0-9a-f]{7}\b", "veth<ID>"),  # Docker veth interfaces
+    (r"(?s)( dumped core\.).*", r"\1"),  # drop coredump stack traces (they differ per crash)
 ]
 
 # --- Normalization -----------------------------------------------------------
@@ -116,9 +119,9 @@ def normalize(msg):
 
     for rx, rep in EXTRA_RX:
         msg = rx.sub(rep, msg)
+    msg = RX_MAC.sub("<MAC>", msg)  # before RX_TIME, which would match the last three octets
     msg = RX_TIME.sub("<TIME>", msg)
     msg = RX_UUID.sub("<UUID>", msg)
-    msg = RX_MAC.sub("<MAC>", msg)
     msg = RX_IPV4.sub(ip_rep, msg)
     msg = RX_IPV6.sub(ip_rep, msg)
     msg = RX_HEX.sub("<HEX>", msg)

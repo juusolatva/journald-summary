@@ -15,7 +15,7 @@ Authoritative rules: `AGENTS.md` (CLAUDE.md just includes it). Hard constraints,
 ## Non-obvious invariants
 - Filter order inside `process_host`: RULES (ident-scoped or `None`) -> NOISE -> priority/ALWAYS_INCLUDE. Rule match skips both later checks.
 - Pattern key = sha1(`source\0template`)[:16]; these keys are what `seen.json` stores. Changing `normalize`, `EXTRA_NORMALIZERS`, `source_of` or the key formula re-marks every pattern `[NEW]` on existing hosts.
-- Normalizer order matters: EXTRA -> TIME -> UUID -> MAC -> IPv4 -> IPv6 -> HEX -> NUM. IP regex hits are validated with `ipaddress`; invalid ones are left as-is (then possibly eaten by HEX/NUM).
+- Normalizer order matters: EXTRA -> MAC -> TIME -> UUID -> IPv4 -> IPv6 -> HEX -> NUM (MAC must precede TIME, else `aa:bb:cc:10:00:01` loses its last 3 octets to TIME). IP regex hits are validated with `ipaddress`; invalid ones are left as-is (then possibly eaten by HEX/NUM).
 - `source_of`: kernel transport -> `kernel`; else `_SYSTEMD_UNIT`/`_SYSTEMD_USER_UNIT` unless `init.scope`, else ident; digits normalized to `<N>`.
 - Unparseable PRIORITY defaults to 6 (info). Non-JSON journalctl lines are skipped silently. journalctl non-zero exit -> RuntimeError after the loop, before any report/state.
 - `report size` footer counts the report without the footer line itself.
