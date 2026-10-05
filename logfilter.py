@@ -27,7 +27,7 @@ HOSTS = {
     "seuranta": [f"--directory={REMOTE_DIR}", "_HOSTNAME=seuranta"],
 }
 
-DEFAULT_STATE_DIR = "./logfilter_state"
+DEFAULT_STATE_DIR = "/var/lib/logfilter"
 
 # Window for the first normal run of a host (no saved cursor yet).
 INITIAL_SINCE = "24 hours ago"
@@ -60,6 +60,11 @@ NOISE = [
     # ("sshd-session", r"^Connection closed by .* \[preauth\]$"),
     (None, r"^s6-rc: info: "),  # s6-overlay service start/stop in containers
     (None, r"^WARNING: COMMAND_FAILED: .*DOCKER"),  # firewalld cleanup of Docker chains
+    (None, r"^WARNING: COMMAND_FAILED: '\S*ip6?tables -w10 -t nat -D (PREROUTING|OUTPUT)' failed: "),  # Docker restart
+    (None, r"^ERROR: NAME_CONFLICT: new_policy_object\(\): 'docker-forwarding'"),  # Docker restart
+    (None, r"^pam_unix\(sudo(-i)?:auth\): "),  # aborted sudo password prompts
+    (None, r"^error: mm_reap: (preauth )?child terminated"),
+    (None, r"\A\s*\Z"),  # empty messages
     ("kernel", r"^ (\? )?[\w.]+\+0x[0-9a-f]+/0x[0-9a-f]+"),  # stack trace frames
     ("kernel", r"^ </?TASK>$"),
     # memory info dump after a page allocation failure
@@ -187,7 +192,7 @@ def write_atomic(path, content):
 # --- Main processing ---------------------------------------------------------
 
 
-def process_host(host, since, state_dir):
+def process_host(host, since, state_dir, report_dir):
     host_dir = os.path.join(state_dir, host)
     cursor_path = os.path.join(host_dir, "cursor")
     seen_path = os.path.join(host_dir, "seen.json")
@@ -301,8 +306,12 @@ def process_host(host, since, state_dir):
             top = ", ".join(f"{ip} x{n}" for ip, n in p["ips"].most_common(5))
             out.append(f"  top IPs: {top} ({len(p['ips'])} distinct)")
     report = "\n".join(out)
-    print(report)
-    print(f"report size: {len(report)} characters\n")
+    full = f"{report}\nreport size: {len(report)} characters\n"
+    if report_dir:
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        write_atomic(os.path.join(report_dir, host, f"{stamp}.txt"), full)
+    else:
+        print(full)
 
     # --- Save state (normal mode only, after the report was produced) ---
     if not preview:
@@ -319,7 +328,10 @@ def main():
     ap.add_argument("hosts", nargs="*", help=f"hosts to process (default: all of {', '.join(HOSTS)})")
     ap.add_argument("--since", help="preview a time window (journalctl --since syntax) without using or updating saved state")
     ap.add_argument("--state-dir", default=DEFAULT_STATE_DIR, help=f"state directory (default: {DEFAULT_STATE_DIR})")
+    ap.add_argument("--report-dir", help="write each report to REPORT_DIR/<host>/<timestamp>.txt instead of stdout")
     args = ap.parse_args()
+    if args.since and args.report_dir:
+        ap.error("--report-dir cannot be used with --since")
 
     hosts = args.hosts or list(HOSTS)
     unknown = [h for h in hosts if h not in HOSTS]
@@ -329,7 +341,7 @@ def main():
     status = 0
     for host in hosts:
         try:
-            process_host(host, args.since, args.state_dir)
+            process_host(host, args.since, args.state_dir, args.report_dir)
         except Exception as exc:  # report and continue with the other hosts
             print(f"{host}: {exc}", file=sys.stderr)
             status = 1

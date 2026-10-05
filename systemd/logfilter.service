@@ -1,0 +1,16 @@
+# Install: copy logfilter.py to /usr/local/bin/ (executable), copy this file and
+# logfilter.timer to /etc/systemd/system/, then: systemctl enable --now logfilter.timer
+# State directories outside /var/lib/logfilter need a ReadWritePaths= entry (ProtectSystem=strict).
+
+[Unit]
+Description=Condense journald logs into per-host reports (logfilter)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/logfilter.py --state-dir /var/lib/logfilter --report-dir /var/lib/logfilter/reports
+StateDirectory=logfilter
+StateDirectoryMode=0700
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes

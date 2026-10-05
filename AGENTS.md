@@ -2,15 +2,16 @@
 
 ## Project
 
-`logfilter.py` is stage 1 of a small log analysis pipeline for a handful of Linux servers. It reads systemd journal entries per host, filters and deduplicates them deterministically, and prints a condensed report per host. It does not call any LLM.
+`logfilter.py` is stage 1 of a small log analysis pipeline for a handful of Linux servers. It reads systemd journal entries per host, filters and deduplicates them deterministically, and produces a condensed report per host (stdout, or one file per host per run with `--report-dir`). It does not call any LLM. It runs daily via `systemd/logfilter.service` and `systemd/logfilter.timer`.
 
-A later stage will send these reports to a local LLM (Ollama native HTTP API on `localhost`). That stage does not exist yet. Do not add LLM, network, or HTTP code unless explicitly asked.
+A later stage will read the report files and send them, in suitable chunks, to a local LLM (Ollama native HTTP API on `localhost`), retrying until analysis succeeds. That stage does not exist yet. Do not add LLM, network, or HTTP code unless explicitly asked.
 
 ## CLI
 
 - `hosts`: optional positional host names (default: all hosts in `HOSTS`).
 - `--since <window>`: preview mode for a time window using `journalctl --since` syntax.
-- `--state-dir <path>`: state storage root directory (default: `./logfilter_state`).
+- `--state-dir <path>`: state storage root directory (default: `/var/lib/logfilter`).
+- `--report-dir <path>`: write each host's report to `<report-dir>/<host>/<YYYYmmdd-HHMMSS>.txt` instead of stdout. Not allowed with `--since`.
 
 ## Environment
 
@@ -25,17 +26,17 @@ A later stage will send these reports to a local LLM (Ollama native HTTP API on 
 
 - Python 3, standard library only. No third-party packages, no `python-systemd`, no other languages.
 - Read the journal only through `journalctl --output=json` via `subprocess`. Never parse `journalctl` text output: it is locale-dependent (palvelin prints Finnish month names such as `loka` and `syys`).
-- No databases. State is plain files in `<state-dir>/<host>/` (default `./logfilter_state/<host>/`):
+- No databases. State is plain files in `<state-dir>/<host>/` (default `/var/lib/logfilter/<host>/`):
   - `cursor`: last processed journal cursor string.
   - `seen.json`: pattern keys already seen, mapped to first-seen ISO timestamp string.
-- State is written atomically (temporary file + `os.replace`) and only after the report has been produced, so a failed run is repeated instead of skipped.
-- `--since` (preview mode) must never read the cursor or write any state. It may read `seen.json` to mark new patterns.
+- State and report files are written atomically (temporary file + `os.replace`). State is written only after the report has been produced (with `--report-dir`: after the report file is in place), so a failed run is repeated instead of skipped.
+- `--since` (preview mode) must never read the cursor or write any state or report files. It may read `seen.json` to mark new patterns.
 - Filtering order must be strictly preserved:
   1. `RULES`: match always selects entry, bypassing `NOISE` and priority limits.
   2. `NOISE`: match drops entry if no rule matched (even if matching `ALWAYS_INCLUDE`).
   3. Priority selection: entry is selected if `PRIORITY <= MAX_PRIORITY` or if it matches `ALWAYS_INCLUDE`.
 - Keep all configuration settings (`REMOTE_DIR`, `DEFAULT_STATE_DIR`, `INITIAL_SINCE`, `MAX_PRIORITY`) and tunable lists (`HOSTS`, `RULES`, `ALWAYS_INCLUDE`, `NOISE`, `EXTRA_NORMALIZERS`) in the configuration section at the top of the file.
-- Keep the project a single script unless asked otherwise.
+- Keep `logfilter.py` a single script (plus the systemd units in `systemd/`) unless asked otherwise. Stage 2 (Ollama analysis) will be a separate script that reads the report files; it does not go into `logfilter.py`.
 
 ## Report format
 
@@ -71,7 +72,7 @@ Structure per host:
 
 Do not run the script against real journals, and do not create or modify anything under `/var/lib/logfilter/`.
 
-Test with a fake `journalctl`: an executable script named `journalctl` in a temporary directory that prints JSON lines (one journal entry per line, with fields such as `__CURSOR`, `__REALTIME_TIMESTAMP`, `PRIORITY`, `MESSAGE`, `SYSLOG_IDENTIFIER`, `_SYSTEMD_UNIT`, `_TRANSPORT`, `_HOSTNAME`). Put that directory first in `PATH` and use a temporary `--state-dir`.
+Test with a fake `journalctl`: an executable script named `journalctl` in a temporary directory that prints JSON lines (one journal entry per line, with fields such as `__CURSOR`, `__REALTIME_TIMESTAMP`, `PRIORITY`, `MESSAGE`, `SYSLOG_IDENTIFIER`, `_SYSTEMD_UNIT`, `_TRANSPORT`, `_HOSTNAME`). Put that directory first in `PATH` and always pass a temporary `--state-dir` (the default is `/var/lib/logfilter`) and, when used, a temporary `--report-dir`.
 
 When invoking `logfilter.py` in tests, specify `palvelin` as a positional argument unless testing multi-host dispatch, to avoid unexpected calls for remote hosts.
 
@@ -81,6 +82,7 @@ Cover at least:
 - rule match overriding a noise match
 - normalization of IPv4, IPv6, MAC, UUID, hex, numbers, timestamps
 - binary `MESSAGE` fields (JSON array of byte values) and repeated fields (JSON array of strings)
+- `--report-dir`: report file written, nothing on stdout, and no state saved if writing the report fails
 
 Syntax check command:
 

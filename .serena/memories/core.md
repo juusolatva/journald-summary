@@ -8,9 +8,11 @@ Authoritative rules: `AGENTS.md` (CLAUDE.md just includes it). Hard constraints,
   - Normalization: `RX_*` regexes, `PRIO_NAMES`, `compile_list` -> `RULES_RX`/`ALWAYS_RX`/`NOISE_RX`/`EXTRA_RX` (compiled at import), `normalize(msg) -> (template, ips)`.
   - Entry helpers: `text` (journal JSON value -> str; int list = binary bytes, str list = repeated field -> first), `source_of`, `match_any`, `fmt_ts`, `one_line`.
   - State: `read_file`, `write_atomic` (`path.tmp` + `os.replace`, dir mode 0700).
-  - `process_host(host, since, state_dir)` — runs journalctl, filters, aggregates, prints report, then saves state.
-  - `main()` — argparse; per-host exceptions go to stderr, other hosts continue, exit status 1.
-- `logfilter_state/` — gitignored; default `--state-dir` (`DEFAULT_STATE_DIR = "./logfilter_state"`, relative to CWD).
+  - `process_host(host, since, state_dir, report_dir)` — runs journalctl, filters, aggregates, emits report (stdout, or atomic file `<report_dir>/<host>/<YYYYmmdd-HHMMSS>.txt`), then saves state.
+  - `main()` — argparse; `--report-dir` + `--since` rejected; per-host exceptions go to stderr, other hosts continue, exit status 1.
+- `DEFAULT_STATE_DIR = "/var/lib/logfilter"` (production path; tests must always pass `--state-dir`). `logfilter_state/` in `.gitignore` is a leftover from local testing.
+- `systemd/logfilter.service` (oneshot, root, `ProtectSystem=strict`, `StateDirectory=logfilter`, reports to `/var/lib/logfilter/reports`) + `systemd/logfilter.timer` (daily, `Persistent=true`). Script installed as `/usr/local/bin/logfilter.py`.
+- Stage 2 (Ollama) will be a separate script consuming the report files; never put it in `logfilter.py`.
 
 ## Non-obvious invariants
 - Filter order inside `process_host`: RULES (ident-scoped or `None`) -> NOISE -> priority/ALWAYS_INCLUDE. Rule match skips both later checks.

@@ -2,7 +2,8 @@
 
 - Syntax check: `python3 -m py_compile logfilter.py`
 - Optional type/lint check (not project-mandated): `basedpyright logfilter.py`
-- Production run (target host only, never in dev/tests): `sudo ./logfilter.py [hosts...] [--since WINDOW] [--state-dir DIR]`
+- Production run (target host only, never in dev/tests): `sudo ./logfilter.py [hosts...] [--since WINDOW] [--state-dir DIR] [--report-dir DIR]`
+- Verify units without installing: copy `systemd/*` to scratch, point `ExecStart` at the repo script, `systemd-analyze verify <copies>`.
 
 ## Fake journalctl harness (the only allowed way to run the script in tests)
 - Create a temp dir with an executable `journalctl` that prints JSON lines (fields: `__CURSOR`, `__REALTIME_TIMESTAMP`, `PRIORITY`, `MESSAGE`, `SYSLOG_IDENTIFIER`, `_SYSTEMD_UNIT`, `_TRANSPORT`, `_HOSTNAME`).
