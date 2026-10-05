@@ -45,7 +45,7 @@ RULES = [
     ("fs_readonly", None, r"(?i)remount\w*.*read-only"),
     ("kernel_crash", None, r"Kernel panic|kernel BUG|Oops:|general protection fault|Call Trace:"),
     ("crash", None, r"segfault at|dumped core"),
-    ("hardware", None, r"(?i)hardware error|machine check|EDAC"),
+    ("hardware", None, r"(?i)hardware error|machine check events|\bEDAC\b.*\berror"),
     ("undervoltage", None, r"(?i)under-?voltage"),
     ("thermal", None, r"(?i)temperature above threshold|thermal throttl"),
 ]
@@ -54,7 +54,6 @@ RULES = [
 ALWAYS_INCLUDE = [
     (None, r"^Accepted \S+ for \S+ from"),  # successful SSH logins
     (None, r"^(Invalid user|Failed \S+ for)"),  # failed SSH logins (logged at info)
-    ("sudo", r"COMMAND="),  # sudo usage
     (None, r"new user: |new group: |delete user |delete group |password changed for "),
     (None, r"^Startup finished in .*\(kernel\)"),  # system boots
 ]
@@ -62,11 +61,16 @@ ALWAYS_INCLUDE = [
 # (SYSLOG_IDENTIFIER or None, regex): routine entries dropped before selection.
 NOISE = [
     # ("sshd-session", r"^Connection closed by .* \[preauth\]$"),
+    (None, r"^s6-rc: info: "),  # s6-overlay service start/stop in containers
+    (None, r"^WARNING: COMMAND_FAILED: .*DOCKER"),  # firewalld cleanup of Docker chains
+    ("kernel", r"^ (\? )?[\w.]+\+0x[0-9a-f]+/0x[0-9a-f]+"),  # stack trace frames
+    ("kernel", r"^ </?TASK>$"),
 ]
 
 # (regex, replacement): applied before the generic normalization below.
 EXTRA_NORMALIZERS = [
     (r"(?i)\b(invalid user) \S*", r"\1 <USER>"),
+    (r"\bveth[0-9a-f]{7}\b", "veth<ID>"),  # Docker veth interfaces
 ]
 
 # --- Normalization -----------------------------------------------------------
@@ -142,7 +146,7 @@ def source_of(entry, ident):
         return "kernel"
     unit = text(entry.get("_SYSTEMD_UNIT")) or text(entry.get("_SYSTEMD_USER_UNIT"))
     label = unit if unit and unit != "init.scope" else (ident or "unknown")
-    return RX_NUM.sub("<N>", label)
+    return re.sub(r"\d+", "<N>", label)
 
 
 def match_any(rules, ident, msg):
@@ -186,7 +190,8 @@ def process_host(host, since, state_dir):
     seen_path = os.path.join(host_dir, "seen.json")
     preview = since is not None
 
-    cmd = ["journalctl", "--output=json", "--no-pager", "--quiet"] + HOSTS[host]
+    # --all: without it, fields over 4096 bytes (e.g. coredump stack traces) are output as null.
+    cmd = ["journalctl", "--output=json", "--all", "--no-pager", "--quiet"] + HOSTS[host]
     if preview:
         cmd.append(f"--since={since}")
         mode = f"preview (since {since}; state not updated)"
