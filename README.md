@@ -1,5 +1,6 @@
 # journald-summary
 
+<<<<<<< HEAD
 `logfilter.py` condenses systemd journal logs from a few Linux servers into a short report per host. It filters and deduplicates entries without calling an LLM: similar messages become one pattern with a count, a time range and an example. The aim is to make failures easy to spot.
 
 This is stage 1 of a log analysis pipeline. A planned stage 2 (not written yet) will send the report files to a local LLM (Ollama) for analysis.
@@ -157,3 +158,8 @@ python3 -m py_compile logfilter.py
 ## License
 
 MIT. See [LICENSE](LICENSE).
+=======
+Condenses systemd journal logs from a handful of Linux servers into short daily reports per host, by filtering and deduplicating them into patterns. A later stage will send the reports to a local LLM for analysis.
+
+The goal is to spot software and hardware problems (failed units, crashes, disk, memory, filesystem, thermal and power issues, misconfiguration). Security monitoring (intrusion detection, auditing, login attempts, scanning) is out of scope; dedicated tools such as auditd cover it.
+>>>>>>> ceb55698aa56d41f5f73663e2ea91f532dacbfa6

@@ -4,6 +4,8 @@
 
 `logfilter.py` is stage 1 of a small log analysis pipeline for a handful of Linux servers. It reads systemd journal entries per host, filters and deduplicates them deterministically, and produces a condensed report per host (stdout, or one file per host per run with `--report-dir`). It does not call any LLM. It runs daily via `systemd/logfilter.service` and `systemd/logfilter.timer`.
 
+The goal is to spot software and hardware problems (failed units, crashes, disk, memory, filesystem, thermal and power issues, misconfiguration). Security monitoring (intrusion detection, auditing, login attempts, scanning) is out of scope; dedicated tools such as auditd cover it. Do not add rules, patterns or report fields aimed at security.
+
 A later stage will read the report files and send them, in suitable chunks, to a local LLM (Ollama native HTTP API on `localhost`), retrying until analysis succeeds. That stage does not exist yet. Do not add LLM, network, or HTTP code unless explicitly asked.
 
 ## CLI
@@ -98,6 +100,15 @@ python3 -m py_compile logfilter.py
 Logs are sensitive. Never use real log content in tests, examples, or commit messages. Use synthetic data with documentation address ranges only:
 - IPv4: `192.0.2.0/24`, `198.51.100.0/24`, `203.0.113.0/24`
 - IPv6: `2001:db8::/32`
+
+## Known issues (deferred)
+
+Observed in production output. Not yet decided; do not fix unless asked. Fixes for 1, 3 and 4 would change the report format.
+
+1. `NOISE` can silently drop high-severity entries (crit/err): the report only shows the total `dropped as noise` count, not which noise patterns dropped what or at which priority.
+2. `dropped as noise` also counts entries above `MAX_PRIORITY` that priority selection would have dropped anyway, so on hosts with noisy info-level logs (for example container logs) it overstates how much noise suppressed.
+3. The same message logged by one process under different units (for example sshd messages under both `sshd.service` and `session-<N>.scope`) becomes separate patterns, because `source` is part of the pattern key.
+4. A host where nothing has ever been selected keeps an empty `seen.json`, so the "no saved patterns" note repeats on every run.
 
 ## Communication
 
