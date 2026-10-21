@@ -3,7 +3,7 @@
 Authoritative rules: `AGENTS.md` (CLAUDE.md just includes it). Hard constraints, CLI, report format, test-data policy live there; read it before any change.
 
 ## Source map
-- `logfilter.py` — the whole project (single script, ~330 lines). Sections in order:
+- `logfilter.py` — stage 1 (single script, ~360 lines). Sections in order:
   - Configuration: `REMOTE_DIR`, `HOSTS` (host -> extra journalctl args), `DEFAULT_STATE_DIR`, `INITIAL_SINCE`, `MAX_PRIORITY`, `RULES`, `ALWAYS_INCLUDE`, `NOISE`, `EXTRA_NORMALIZERS`.
   - Normalization: `RX_*` regexes, `PRIO_NAMES`, `compile_list` -> `RULES_RX`/`ALWAYS_RX`/`NOISE_RX`/`EXTRA_RX` (compiled at import), `normalize(msg) -> (template, ips)`.
   - Entry helpers: `text` (journal JSON value -> str; int list = binary bytes, str list = repeated field -> first), `source_of`, `match_any`, `fmt_ts`, `one_line`.
@@ -12,7 +12,8 @@ Authoritative rules: `AGENTS.md` (CLAUDE.md just includes it). Hard constraints,
   - `main()` — argparse; `--report-dir` + `--since` rejected; per-host exceptions go to stderr, other hosts continue, exit status 1.
 - `DEFAULT_STATE_DIR = "/var/lib/logfilter"` (production path; tests must always pass `--state-dir`). `logfilter/` (gitignored) is a local copy of production output (`<host>/{cursor,seen.json}`, `reports/<host>/*.txt`): real, sensitive logs — read for tuning only, never commit, quote in tests/commits, or publish.
 - `systemd/logfilter.service` (oneshot, root, `ProtectSystem=strict`, `StateDirectory=logfilter`, reports to `/var/lib/logfilter/reports`) + `systemd/logfilter.timer` (daily, `Persistent=true`). Script installed as `/usr/local/bin/logfilter.py`.
-- Stage 2 (Ollama) will be a separate script consuming the report files; never put it in `logfilter.py`.
+- `analyze.py` — stage 2: sends the report files to Ollama and writes `<stamp>.analysis.txt` next to each report. All LLM/HTTP code lives there, never in `logfilter.py`. Same style as `logfilter.py` (configuration section first, plain functions). Invariants (chunking, error classes, retry/stop rules): `mem:analyze`.
+- `systemd/analyze.service` (oneshot, `Restart=on-failure` every 30 min, `IPAddressAllow=localhost`). `logfilter.service` has `Wants=analyze.service`, and analyze is ordered `After=logfilter.service`, so it runs after every logfilter run, also when one host failed.
 
 ## Non-obvious invariants
 - Filter order inside `process_host`: RULES (ident-scoped or `None`) -> NOISE -> priority/ALWAYS_INCLUDE. Rule match skips both later checks.

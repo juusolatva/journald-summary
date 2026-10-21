@@ -4,6 +4,8 @@
 
 [Unit]
 Description=Condense journald logs into per-host reports (logfilter)
+# Stage 2: analyze the new reports once this run has finished (even if one host failed).
+Wants=analyze.service
 
 [Service]
 Type=oneshot

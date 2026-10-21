@@ -1,0 +1,23 @@
+# Install: copy analyze.py to /usr/local/bin/ (executable) and this file to
+# /etc/systemd/system/. logfilter.service pulls it in (Wants=) and it starts
+# after logfilter has finished. Reports not analyzed yet are retried every
+# 30 minutes until they succeed.
+
+[Unit]
+Description=Analyze logfilter reports with the local Ollama model
+After=logfilter.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/analyze.py --report-dir /var/lib/logfilter/reports
+Restart=on-failure
+RestartSec=30min
+TimeoutStartSec=6h
+StateDirectory=logfilter
+StateDirectoryMode=0700
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+IPAddressAllow=localhost
+IPAddressDeny=any

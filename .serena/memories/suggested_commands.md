@@ -1,6 +1,6 @@
 # Suggested commands
 
-- Syntax check: `python3 -m py_compile logfilter.py`
+- Syntax check: `python3 -m py_compile logfilter.py analyze.py`
 - Optional type/lint check (not project-mandated): `basedpyright logfilter.py`
 - Production run (target host only, never in dev/tests): `sudo ./logfilter.py [hosts...] [--since WINDOW] [--state-dir DIR] [--report-dir DIR]`
 - Verify units without installing: copy `systemd/*` to scratch, point `ExecStart` at the repo script, `systemd-analyze verify <copies>`.
@@ -13,6 +13,13 @@
 - Binary MESSAGE = JSON int array of bytes; repeated field = JSON string array.
 - Synthetic data only, documentation IP ranges (192.0.2.0/24, 198.51.100.0/24, 203.0.113.0/24, 2001:db8::/32).
 - Put temp dirs in the session scratchpad, never under `/var/lib/logfilter/`.
+
+## Fake Ollama harness (analyze.py)
+- Small `http.server` script on 127.0.0.1 answering `POST /api/chat` with `{"message": {"content": <JSON string>}, "done_reason": "stop", "prompt_eval_count": .., "eval_count": ..}`; have it log request bodies and take a scripted list of reply kinds (ok / schema-invalid / non-JSON / `done_reason: "length"`).
+- Synthetic reports in a temp report dir (one with patterns, one with 0 patterns, one over `CHUNK_CHARS` to force chunks plus a merge).
+- Run with zero retry waits: `python3 -c "import sys; sys.argv=['analyze.py']+sys.argv[1:]; import analyze; analyze.RETRY_DELAYS=[0,0]; sys.exit(analyze.main())" --report-dir $TMP/r --url http://127.0.0.1:PORT --known-issues $TMP/known.txt`
+- Unreachable server: run the same command with no server listening.
+- Real-model smoke test (dev machine): `--url http://10.0.0.4:11434`, synthetic reports only, unless the user asks to analyze real reports.
 
 ## Linux notes
 - System locale is Finnish: `ls -l`, `date`, journalctl text output show Finnish month names (loka, syys). Use `LC_ALL=C` when parsing command output.

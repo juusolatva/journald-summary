@@ -1,0 +1,11 @@
+# analyze.py (stage 2) — invariants
+
+- Input: `<report-dir>/<host>/<YYYYmmdd-HHMMSS>.txt` (matched by `REPORT_NAME`; `*.analysis.txt` must never match). Output: `<stamp>.analysis.txt` beside it, written via `write_atomic`. Existence of the output = analyzed; there is no other state.
+- Hosts = subdirectories of the report dir (no `HOSTS` list). Reports are processed oldest first per host.
+- `split_report`: header = lines before the first blank line; a block = one non-indented line plus the following `"  "`-indented lines; the `report size:` footer is dropped. Relies on logfilter's report format (`AGENTS.md`), so a format change there can break chunking.
+- `make_chunks`: greedy packing up to `CHUNK_CHARS`, every chunk prefixed with the header; `chunk: i/n` is added only when n > 1. n > 1 triggers an extra merge request with `MERGE_PROMPT`.
+- Reports with no blocks: rendered without calling Ollama (`model: -`, `chunks: 0`).
+- `chat`: `/api/chat`, `stream: false`, `format: SCHEMA`, `options: {num_ctx: NUM_CTX, temperature: 0}`. Rejected (ValueError) when `done_reason != "stop"`, when prompt+eval tokens >= `NUM_CTX` (Ollama truncates prompts silently) or when `validate` fails.
+- Error classes drive control flow in `main`: `OSError`/`http.client.HTTPException` (server unreachable, HTTP errors including unknown model) stop the whole run; `ValueError`/`KeyError` (bad reply) skip that report only. Both make the exit status 1, and systemd (`Restart=on-failure`, `RestartSec=30min`) retries.
+- Known issues: `KNOWN_ISSUES` file, one per line, `#` comments; appended to `SYSTEM_PROMPT` as "Known issues:" (or `none`).
+- Production: runs on palvelin (= 10.0.0.4, also the Ollama host), default URL is localhost. From the dev machine use `--url http://10.0.0.4:11434`. Test models: `qwen3:4b-instruct-2507-q8_0` (default), `ministral-3:8b`.

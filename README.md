@@ -1,9 +1,10 @@
 # journald-summary
 
-<<<<<<< HEAD
 `logfilter.py` condenses systemd journal logs from a few Linux servers into a short report per host. It filters and deduplicates entries without calling an LLM: similar messages become one pattern with a count, a time range and an example. The aim is to make failures easy to spot.
 
-This is stage 1 of a log analysis pipeline. A planned stage 2 (not written yet) will send the report files to a local LLM (Ollama) for analysis.
+The goal is to spot software and hardware problems (failed units, crashes, disk, memory, filesystem, thermal and power issues, misconfiguration). Security monitoring (intrusion detection, auditing, login attempts, scanning) is out of scope; dedicated tools such as auditd cover it.
+
+This is stage 1 of a log analysis pipeline. Stage 2, `analyze.py`, sends the report files to a local LLM (Ollama) for analysis; see [Analysis (stage 2)](#analysis-stage-2).
 
 ## Requirements
 
@@ -95,7 +96,7 @@ note: no saved patterns for this host yet, so every pattern is marked new
 report size: 1411 characters
 ```
 
-Patterns are sorted so that rule matches come first, then new patterns, then by priority (most severe first) and by count (largest first). The stage 2 LLM step will parse this format, so changes to it must be made with care.
+Patterns are sorted so that rule matches come first, then new patterns, then by priority (most severe first) and by count (largest first). The stage 2 analysis (`analyze.py`) reads this format, so changes to it must be made with care.
 
 ## Configuration
 
@@ -115,6 +116,60 @@ All settings are at the top of `logfilter.py`:
 
 The identifier is matched against `SYSLOG_IDENTIFIER` (or `_COMM` if that is missing). Regexes are matched against `MESSAGE` with `re.search`.
 
+## Analysis (stage 2)
+
+`analyze.py` reads the reports written with `--report-dir`, sends each one to an Ollama model and writes the result next to the report as `<host>/<YYYYmmdd-HHMMSS>.analysis.txt`. A report counts as analyzed once that file exists, so a report whose analysis failed is tried again on the next run. Python 3 standard library only.
+
+```
+./analyze.py [HOST ...] [--report-dir PATH] [--url URL] [--model MODEL] [--known-issues PATH]
+```
+
+| Option | Meaning |
+|---|---|
+| `HOST ...` | Hosts to process. Default: every directory in the report directory. |
+| `--report-dir PATH` | Report directory. Default: `/var/lib/logfilter/reports`. |
+| `--url URL` | Ollama server. Default: `http://localhost:11434`. |
+| `--model MODEL` | Ollama model. Default: `qwen3:4b-instruct-2507-q8_0`. |
+| `--known-issues PATH` | Known issues file. Default: `/etc/logfilter/known-issues.txt`. |
+
+How it works:
+
+- Reports are processed oldest first. A report with no selected patterns gets its analysis file without calling the model.
+- A report that fits in `CHUNK_CHARS` is sent in one request. A larger one is split between pattern blocks, each chunk repeating the report header, and a final request merges the chunk results into one analysis.
+- Requests go to `/api/chat` with a JSON schema as `format`, temperature 0 and `num_ctx` set to `NUM_CTX`. A reply is accepted only if it matches the schema, generation was not cut short and the context window was not full.
+- Each request is tried up to three times (`RETRY_DELAYS`). If Ollama cannot be reached, the run stops and leaves the remaining reports for the next run. If the replies for one report stay invalid, that report is skipped and the others continue. In both cases the exit status is 1.
+- The known issues file has one issue per line (empty lines and lines starting with `#` are ignored), for example `palvelin: ata1 SATA link errors (SSD port, cable being checked)`. The model marks matching issues as known instead of leaving them out. A missing file means no known issues.
+
+Example analysis (synthetic data):
+
+```
+=== palvelin 20261007-000000 ===
+model: qwen3:4b-instruct-2507-q8_0
+chunks: 1
+summary: One unit failed; nginx could not reach its upstream for 20 minutes.
+
+[high] backup.service failed
+  backup.service failed once at 08:00 with result 'exit-code'.
+[medium] nginx upstream timeouts
+  Five upstream timeouts between 08:06 and 08:26, likely an unresponsive backend.
+[low] [known] Clock not synchronised
+  chronyd had no selectable sources three times.
+```
+
+Issues are sorted with unknown issues first, then by severity (`critical`, `high`, `medium`, `low`).
+
+Settings at the top of `analyze.py`:
+
+| Setting | Purpose |
+|---|---|
+| `DEFAULT_REPORT_DIR`, `DEFAULT_URL`, `DEFAULT_MODEL` | Defaults for `--report-dir`, `--url`, `--model` |
+| `NUM_CTX` | Context window requested from Ollama, in tokens |
+| `CHUNK_CHARS` | Maximum report characters per request |
+| `KNOWN_ISSUES` | Default for `--known-issues` |
+| `REQUEST_TIMEOUT` | Seconds to wait for one reply |
+| `RETRY_DELAYS` | Waits between attempts of one request |
+| `SYSTEM_PROMPT`, `MERGE_PROMPT`, `SCHEMA` | Prompts and the reply schema |
+
 ## Installation (daily systemd timer)
 
 ```
@@ -133,6 +188,16 @@ sudo systemctl start logfilter.service
 journalctl -u logfilter.service
 ```
 
+To add the analysis (on the machine that runs Ollama):
+
+```
+sudo install -m 755 analyze.py /usr/local/bin/analyze.py
+sudo cp systemd/analyze.service /etc/systemd/system/
+sudo systemctl daemon-reload
+```
+
+`logfilter.service` pulls in `analyze.service` (`Wants=`), which starts after logfilter has finished, also when one host failed. If the analysis fails, systemd restarts it every 30 minutes until all reports are analyzed. The service may only connect to localhost (`IPAddressAllow=localhost`). The first run analyzes every existing report that has no analysis file yet.
+
 ## Testing
 
 Do not test against real journals or the real state directory. Use a fake `journalctl` that prints synthetic JSON entries, and temporary state and report directories:
@@ -149,17 +214,14 @@ PATH=/tmp/lf/bin:$PATH python3 logfilter.py palvelin --state-dir /tmp/lf/state
 
 Use only documentation address ranges in test data (`192.0.2.0/24`, `198.51.100.0/24`, `203.0.113.0/24`, `2001:db8::/32`).
 
+To test `analyze.py` without a real model, run a small fake Ollama server (`http.server`) that answers `POST /api/chat` with a JSON reply whose `message.content` matches the schema, point `--url` at it and use a temporary report directory with synthetic reports.
+
 Syntax check:
 
 ```
-python3 -m py_compile logfilter.py
+python3 -m py_compile logfilter.py analyze.py
 ```
 
 ## License
 
 MIT. See [LICENSE](LICENSE).
-=======
-Condenses systemd journal logs from a handful of Linux servers into short daily reports per host, by filtering and deduplicating them into patterns. A later stage will send the reports to a local LLM for analysis.
-
-The goal is to spot software and hardware problems (failed units, crashes, disk, memory, filesystem, thermal and power issues, misconfiguration). Security monitoring (intrusion detection, auditing, login attempts, scanning) is out of scope; dedicated tools such as auditd cover it.
->>>>>>> ceb55698aa56d41f5f73663e2ea91f532dacbfa6

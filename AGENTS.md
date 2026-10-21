@@ -6,7 +6,7 @@
 
 The goal is to spot software and hardware problems (failed units, crashes, disk, memory, filesystem, thermal and power issues, misconfiguration). Security monitoring (intrusion detection, auditing, login attempts, scanning) is out of scope; dedicated tools such as auditd cover it. Do not add rules, patterns or report fields aimed at security.
 
-A later stage will read the report files and send them, in suitable chunks, to a local LLM (Ollama native HTTP API on `localhost`), retrying until analysis succeeds. That stage does not exist yet. Do not add LLM, network, or HTTP code unless explicitly asked.
+Stage 2, `analyze.py`, reads the report files and sends them, in chunks when needed, to a local LLM (Ollama native HTTP API, `http://localhost:11434` by default), retrying until analysis succeeds. It writes `<report-dir>/<host>/<YYYYmmdd-HHMMSS>.analysis.txt` next to each report; a report counts as analyzed when that file exists. It runs via `systemd/analyze.service`, which `logfilter.service` pulls in. All LLM and HTTP code belongs in `analyze.py`; `logfilter.py` never calls an LLM or the network.
 
 ## CLI
 
@@ -38,7 +38,7 @@ A later stage will read the report files and send them, in suitable chunks, to a
   2. `NOISE`: match drops entry if no rule matched (even if matching `ALWAYS_INCLUDE`).
   3. Priority selection: entry is selected if `PRIORITY <= MAX_PRIORITY` or if it matches `ALWAYS_INCLUDE`.
 - Keep all configuration settings (`REMOTE_DIR`, `DEFAULT_STATE_DIR`, `INITIAL_SINCE`, `MAX_PRIORITY`) and tunable lists (`HOSTS`, `RULES`, `ALWAYS_INCLUDE`, `NOISE`, `EXTRA_NORMALIZERS`) in the configuration section at the top of the file.
-- Keep `logfilter.py` a single script (plus the systemd units in `systemd/`) unless asked otherwise. Stage 2 (Ollama analysis) will be a separate script that reads the report files; it does not go into `logfilter.py`.
+- Keep `logfilter.py` and `analyze.py` single scripts (plus the systemd units in `systemd/`) unless asked otherwise. `analyze.py` also uses the standard library only (`urllib.request` for HTTP), keeps its settings and prompts in its configuration section, and writes analysis files atomically.
 
 ## Report format
 
@@ -86,14 +86,16 @@ Cover at least:
 - binary `MESSAGE` fields (JSON array of byte values) and repeated fields (JSON array of strings)
 - `--report-dir`: report file written, nothing on stdout, and no state saved if writing the report fails
 
+Test `analyze.py` with a fake Ollama server (a small `http.server` script answering `POST /api/chat`) and synthetic reports in a temporary `--report-dir`, passing `--url` and `--known-issues` explicitly. Cover at least: single-chunk and multi-chunk reports (including the merge request), empty reports (no request), already analyzed reports skipped, invalid replies retried, and an unreachable server stopping the run with no analysis files written.
+
 Syntax check command:
 
 ```
-python3 -m py_compile logfilter.py
+python3 -m py_compile logfilter.py analyze.py
 ```
 - `python3`: Python interpreter executable.
 - `-m py_compile`: executes standard library module `py_compile` to compile source code to bytecode.
-- `logfilter.py`: target script file to check.
+- `logfilter.py analyze.py`: target script files to check.
 
 ## Test data
 

@@ -62,11 +62,34 @@ NOISE = [
     (None, r"^WARNING: COMMAND_FAILED: .*DOCKER"),  # firewalld cleanup of Docker chains
     (None, r"^WARNING: COMMAND_FAILED: '\S*ip6?tables -w10 -t nat -D (PREROUTING|OUTPUT)' failed: "),  # Docker restart
     (None, r"^ERROR: NAME_CONFLICT: new_policy_object\(\): 'docker-forwarding'"),  # Docker restart
-    (None, r"^pam_unix\(sudo(-i)?:auth\): "),  # aborted sudo password prompts
+    # aborted sudo password prompts (not anchored: some arrive with a garbled ident line before them)
+    (None, r"pam_unix\(sudo(-i)?:auth\): "),
     (None, r"^error: mm_reap: (preauth )?child terminated"),
     (None, r"\A\s*\Z"),  # empty messages
+    ("kernel", r"^\[UFW BLOCK\] "),  # firewall block logging
     ("kernel", r"^ (\? )?[\w.]+\+0x[0-9a-f]+/0x[0-9a-f]+"),  # stack trace frames
     ("kernel", r"^ </?TASK>$"),
+    # register dump and context lines around a stack trace (the event itself is caught by RULES)
+    ("kernel", r"^(RIP|RSP|RAX|RDX|RBP|R10|R13|FS|CS|CR2|DR0|DR3|PKRU): |^Code: "
+               r"|^CPU: \d+ (UID: \d+ )?PID: \d+ Comm: |^Hardware name: "),
+    # boot-time firmware, driver and CPU messages that are the same on every boot
+    ("kernel", r"taints kernel\.$|inheriting taint\.$|^Disabling lock debugging due to kernel taint$"),
+    ("kernel", r"^NVRM: loading NVIDIA UNIX "),
+    ("kernel", r"^ACPI BIOS Error \(bug\): Could not resolve symbol "
+               r"|^ACPI Error: Aborting method .* due to previous error \(AE_NOT_FOUND\)"
+               r"|^ACPI Warning: SystemIO range .* conflicts with OpRegion "),
+    ("kernel", r"admin-guide/hw-vuln/"),  # CPU vulnerability notices
+    ("kernel", r"^ENERGY_PERF_BIAS: |^amd_pstate: the _CPC object is not present"),
+    ("kernel", r": supply \w+ not found, using dummy regulator$"),
+    ("kernel", r"^ata\d+\.\d+: (supports DRM functions|LPM support broken)"),
+    ("kernel", r"^NOTICE: Automounting of tracing to debugfs is deprecated"),
+    ("kernel", r"^asus_wmi: failed to register LPS0 sleep handler"),
+    ("kernel", r"^device-mapper: core: CONFIG_IMA_DISABLE_HTABLE is disabled"),
+    ("kernel", r"^kauditd_printk_skb: \d+ callbacks suppressed$"),
+    (None, r"^lm_sensors\.service: Referenced but unset environment variable"),
+    (None, r"^No swap; memory pressure usage will be degraded$"),  # systemd-oomd
+    (None, r"Found matching \.network file, based on potentially unpredictable interface name"),
+    (None, r"^Cannot change IRQ \d+ affinity: Permission denied$|^IRQ \d+ affinity is now unmanaged$"),
     # memory info dump after a page allocation failure
     ("kernel", r"^(Mem-Info:|active_anon:|Node \d+ |lowmem_reserve\[\]:|\d+ total pagecache pages|\d+ pages "
                r"|Free swap |Total swap |Memory cgroup min protection )"),
@@ -79,6 +102,7 @@ EXTRA_NORMALIZERS = [
     (r"(?i)\b(invalid user) \S*", r"\1 <USER>"),
     (r"\bveth[0-9a-f]{7}\b", "veth<ID>"),  # Docker veth interfaces
     (r"(?s)( dumped core\.).*", r"\1"),  # drop coredump stack traces (they differ per crash)
+    (r"\b(cmd|res) [0-9a-f]{2}/[0-9a-f:/]+", r"\1 <REGS>"),  # libata taskfile register dumps
 ]
 
 # --- Normalization -----------------------------------------------------------
