@@ -124,7 +124,7 @@ def split_report(text):
         return "\n".join(lines), []
     blank = lines.index("")
     blocks = []
-    for line in lines[blank + 1:]:
+    for line in lines[blank + 1 :]:
         if line.startswith("  ") and blocks:
             blocks[-1] += "\n" + line
         else:
@@ -182,12 +182,16 @@ def write_atomic(path, content):
 
 
 def validate(result):
-    ok = isinstance(result, dict) and isinstance(result.get("summary"), str) \
-        and isinstance(result.get("issues"), list)
+    ok = isinstance(result, dict) and isinstance(result.get("summary"), str) and isinstance(result.get("issues"), list)
     for issue in result.get("issues", []) if ok else []:
-        ok = ok and isinstance(issue, dict) and issue.get("severity") in SEVERITIES \
-            and isinstance(issue.get("known"), bool) and isinstance(issue.get("title"), str) \
+        ok = (
+            ok
+            and isinstance(issue, dict)
+            and issue.get("severity") in SEVERITIES
+            and isinstance(issue.get("known"), bool)
+            and isinstance(issue.get("title"), str)
             and isinstance(issue.get("details"), str)
+        )
     if not ok:
         raise ValueError("reply does not match the schema")
 
@@ -201,8 +205,9 @@ def chat(url, model, system, user):
         "format": SCHEMA,
         "options": {"num_ctx": NUM_CTX, "temperature": 0},
     }
-    req = urllib.request.Request(url.rstrip("/") + "/api/chat", data=json.dumps(body).encode(),
-                                 headers={"Content-Type": "application/json"})
+    req = urllib.request.Request(
+        url.rstrip("/") + "/api/chat", data=json.dumps(body).encode(), headers={"Content-Type": "application/json"}
+    )
     with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as resp:
         reply = json.load(resp)
     if reply.get("done_reason", "stop") != "stop":
@@ -232,8 +237,7 @@ def chat_retry(label, url, model, system, user):
 
 
 def render(host, stamp, model, n_chunks, result):
-    out = [f"=== {host} {stamp} ===", f"model: {model}", f"chunks: {n_chunks}",
-           f"summary: {result['summary']}", ""]
+    out = [f"=== {host} {stamp} ===", f"model: {model}", f"chunks: {n_chunks}", f"summary: {result['summary']}", ""]
     issues = sorted(result["issues"], key=lambda i: (i["known"], SEVERITIES.index(i["severity"])))
     if not issues:
         out.append("no issues")
@@ -252,27 +256,30 @@ def analyze_report(host, stamp, path, url, model, system):
         result = {"summary": "No entries were selected in this report.", "issues": []}
         return render(host, stamp, "-", 0, result)
     chunks = make_chunks(header, blocks)
-    results = [chat_retry(f"{label} chunk {i}/{len(chunks)}", url, model, system, c)
-               for i, c in enumerate(chunks, 1)]
+    results = [chat_retry(f"{label} chunk {i}/{len(chunks)}", url, model, system, c) for i, c in enumerate(chunks, 1)]
     if len(results) == 1:
         result = results[0]
     else:
-        result = chat_retry(f"{label} merge", url, model, MERGE_PROMPT,
-                            header + "\n\nChunk analyses:\n" + json.dumps(results, indent=1))
+        result = chat_retry(
+            f"{label} merge", url, model, MERGE_PROMPT, header + "\n\nChunk analyses:\n" + json.dumps(results, indent=1)
+        )
     return render(host, stamp, model, len(chunks), result)
 
 
 def main():
     ap = argparse.ArgumentParser(description="Analyze logfilter reports with a local Ollama model.")
     ap.add_argument("hosts", nargs="*", help="hosts to process (default: every directory in the report directory)")
-    ap.add_argument("--report-dir", default=DEFAULT_REPORT_DIR, help=f"report directory (default: {DEFAULT_REPORT_DIR})")
+    ap.add_argument(
+        "--report-dir", default=DEFAULT_REPORT_DIR, help=f"report directory (default: {DEFAULT_REPORT_DIR})"
+    )
     ap.add_argument("--url", default=DEFAULT_URL, help=f"Ollama server URL (default: {DEFAULT_URL})")
     ap.add_argument("--model", default=DEFAULT_MODEL, help=f"Ollama model (default: {DEFAULT_MODEL})")
     ap.add_argument("--known-issues", default=KNOWN_ISSUES, help=f"known issues file (default: {KNOWN_ISSUES})")
     args = ap.parse_args()
 
-    hosts = args.hosts or sorted(d for d in os.listdir(args.report_dir)
-                                 if os.path.isdir(os.path.join(args.report_dir, d)))
+    hosts = args.hosts or sorted(
+        d for d in os.listdir(args.report_dir) if os.path.isdir(os.path.join(args.report_dir, d))
+    )
     unknown = [h for h in hosts if not os.path.isdir(os.path.join(args.report_dir, h))]
     if unknown:
         ap.error(f"no report directory for host(s): {', '.join(unknown)}")
@@ -285,8 +292,7 @@ def main():
         try:
             analysis = analyze_report(host, stamp, path, args.url, args.model, system)
         except (OSError, http.client.HTTPException) as exc:  # server unreachable: stop, retry later
-            print(f"{host}/{stamp}: {exc}; stopping, remaining reports are left for the next run",
-                  file=sys.stderr)
+            print(f"{host}/{stamp}: {exc}; stopping, remaining reports are left for the next run", file=sys.stderr)
             return 1
         except (ValueError, KeyError) as exc:  # bad reply for this report: try the others
             print(f"{host}/{stamp}: {exc}", file=sys.stderr)

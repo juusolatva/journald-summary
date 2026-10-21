@@ -1,0 +1,4 @@
+# Runtime requirements: none.
+# logfilter.py and analyze.py use only the Python standard library (Python 3.10 or newer).
+# Development and CI tools (pytest, pytest-cov, ruff) are in requirements-dev.txt,
+# pinned with hashes in requirements-dev.lock.

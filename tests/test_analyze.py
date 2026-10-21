@@ -13,8 +13,7 @@ from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import analyze  # noqa: E402
-
+import analyze
 
 # --- Synthetic data ----------------------------------------------------------
 
@@ -66,9 +65,14 @@ def issue(severity="high", known=False, title="demo failed", details="It failed 
 
 def ok(res=None, prompt=100, ev=50, done_reason="stop"):
     content = json.dumps(res if res is not None else result())
-    return 200, {"model": "fake", "message": {"role": "assistant", "content": content},
-                 "done": True, "done_reason": done_reason,
-                 "prompt_eval_count": prompt, "eval_count": ev}
+    return 200, {
+        "model": "fake",
+        "message": {"role": "assistant", "content": content},
+        "done": True,
+        "done_reason": done_reason,
+        "prompt_eval_count": prompt,
+        "eval_count": ev,
+    }
 
 
 def raw(content, **kw):
@@ -194,8 +198,7 @@ class SplitReportTest(unittest.TestCase):
         self.assertEqual(len(b), 2)
         first = b[0].split("\n")
         self.assertTrue(first[0].startswith("err demo0.service"))
-        self.assertEqual([x.split(":")[0] for x in first[1:]],
-                         ["  pattern", "  example", "  top IPs"])
+        self.assertEqual([x.split(":")[0] for x in first[1:]], ["  pattern", "  example", "  top IPs"])
         self.assertEqual(len(b[1].split("\n")), 3)
 
     def test_no_blank_line(self):
@@ -241,8 +244,8 @@ class MakeChunksTest(unittest.TestCase):
         seen = []
         for i, c in enumerate(chunks, 1):
             self.assertTrue(c.startswith(header + f"\nchunk: {i}/{n}\n\n"), c[:300])
-            body = c[len(header + f"\nchunk: {i}/{n}\n\n"):]
-            h2, parts = analyze.split_report(header + "\n\n" + body)
+            body = c[len(header + f"\nchunk: {i}/{n}\n\n") :]
+            _, parts = analyze.split_report(header + "\n\n" + body)
             seen.extend(parts)
         # every block exactly once, unsplit, in order
         self.assertEqual(seen, blocks)
@@ -258,15 +261,14 @@ class MakeChunksTest(unittest.TestCase):
 
     def test_greedy_packing(self):
         header = "=== palvelin ===\nrange: no entries"
-        blocks = [f"err demo{i}.service x1  t -> t\n  pattern: p{i}\n  example: " + "e" * 40
-                  for i in range(10)]
+        blocks = [f"err demo{i}.service x1  t -> t\n  pattern: p{i}\n  example: " + "e" * 40 for i in range(10)]
         size = len(blocks[0])
         # room for exactly three blocks per chunk, with slack for the chunk line
         with mock.patch.object(analyze, "CHUNK_CHARS", len(header) + 3 * (size + 1) + 20):
             chunks = analyze.make_chunks(header, blocks)
         self.assertEqual(len(chunks), 4)
         for i, c in enumerate(chunks):
-            group = blocks[3 * i:3 * i + 3]
+            group = blocks[3 * i : 3 * i + 3]
             self.assertEqual(c, f"{header}\nchunk: {i + 1}/4\n\n" + "\n".join(group))
 
     def test_chunks_at_most_chunk_chars(self):
@@ -285,19 +287,28 @@ class PendingReportsTest(unittest.TestCase):
             d = os.path.join(tmp, "palvelin")
             os.mkdir(d)
             names = [
-                "20261003-000000.txt", "20261001-000000.txt", "20261002-000000.txt",
-                "20261002-000000.analysis.txt", "20261004-000000.txt.tmp",
-                "20261004-000000.analysis.txt.tmp", "notes.txt", "2026101-000000.txt",
-                "20261005-000000.TXT", "x20261006-000000.txt",
+                "20261003-000000.txt",
+                "20261001-000000.txt",
+                "20261002-000000.txt",
+                "20261002-000000.analysis.txt",
+                "20261004-000000.txt.tmp",
+                "20261004-000000.analysis.txt.tmp",
+                "notes.txt",
+                "2026101-000000.txt",
+                "20261005-000000.TXT",
+                "x20261006-000000.txt",
             ]
             for name in names:
                 with open(os.path.join(d, name), "w") as f:
                     f.write("x")
             got = list(analyze.pending_reports(tmp, ["palvelin"]))
-        self.assertEqual(got, [
-            ("palvelin", "20261001-000000", os.path.join(d, "20261001-000000.txt")),
-            ("palvelin", "20261003-000000", os.path.join(d, "20261003-000000.txt")),
-        ])
+        self.assertEqual(
+            got,
+            [
+                ("palvelin", "20261001-000000", os.path.join(d, "20261001-000000.txt")),
+                ("palvelin", "20261003-000000", os.path.join(d, "20261003-000000.txt")),
+            ],
+        )
 
     def test_hosts_in_given_order(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -314,10 +325,13 @@ class LoadKnownTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "known.txt")
             with open(path, "w", encoding="utf-8") as f:
-                f.write("# header comment\n\n  palvelin: ata1 link errors  \n\t\n"
-                        "   # indented comment\nseuranta: demo.service restarts\n")
-            self.assertEqual(analyze.load_known(path),
-                             ["palvelin: ata1 link errors", "seuranta: demo.service restarts"])
+                f.write(
+                    "# header comment\n\n  palvelin: ata1 link errors  \n\t\n"
+                    "   # indented comment\nseuranta: demo.service restarts\n"
+                )
+            self.assertEqual(
+                analyze.load_known(path), ["palvelin: ata1 link errors", "seuranta: demo.service restarts"]
+            )
 
     def test_missing_file(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -352,9 +366,8 @@ class ValidateTest(unittest.TestCase):
             None,
         ]
         for value in bad:
-            with self.subTest(value=value):
-                with self.assertRaises(ValueError):
-                    analyze.validate(value)
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                analyze.validate(value)
 
 
 class RenderTest(unittest.TestCase):
@@ -368,7 +381,7 @@ class RenderTest(unittest.TestCase):
             issue("high", False, "high one", "d6"),
         ]
         out = analyze.render("palvelin", "20261001-000000", "m:1", 2, result("All bad.", issues))
-        self.assertEqual(out, "\n".join([
+        expected = [
             "=== palvelin 20261001-000000 ===",
             "model: m:1",
             "chunks: 2",
@@ -386,12 +399,12 @@ class RenderTest(unittest.TestCase):
             "  d3",
             "[low] [known] known low",
             "  d1",
-        ]) + "\n")
+        ]
+        self.assertEqual(out, "\n".join(expected) + "\n")
 
     def test_no_issues(self):
         out = analyze.render("vakoilu", "20261002-030405", "-", 0, result("Quiet."))
-        self.assertEqual(out, "=== vakoilu 20261002-030405 ===\nmodel: -\nchunks: 0\n"
-                              "summary: Quiet.\n\nno issues\n")
+        self.assertEqual(out, "=== vakoilu 20261002-030405 ===\nmodel: -\nchunks: 0\nsummary: Quiet.\n\nno issues\n")
 
 
 class ChatTest(FakeServerMixin, unittest.TestCase):
@@ -406,8 +419,7 @@ class ChatTest(FakeServerMixin, unittest.TestCase):
         self.assertIs(body["stream"], False)
         self.assertEqual(body["format"], analyze.SCHEMA)
         self.assertEqual(body["options"], {"num_ctx": analyze.NUM_CTX, "temperature": 0})
-        self.assertEqual(body["messages"], [{"role": "system", "content": "SYS"},
-                                            {"role": "user", "content": "USER"}])
+        self.assertEqual(body["messages"], [{"role": "system", "content": "SYS"}, {"role": "user", "content": "USER"}])
 
     def test_trailing_slash(self):
         self.start_server(ok())
@@ -476,9 +488,8 @@ class ChatRetryTest(FakeServerMixin, unittest.TestCase):
     def test_raises_last_error(self):
         self.start_server(non_json(), length(), schema_invalid())
         err = io.StringIO()
-        with contextlib.redirect_stderr(err):
-            with self.assertRaises(ValueError) as cm:
-                analyze.chat_retry("lbl", self.url, "m", "s", "u")
+        with contextlib.redirect_stderr(err), self.assertRaises(ValueError) as cm:
+            analyze.chat_retry("lbl", self.url, "m", "s", "u")
         self.assertIn("schema", str(cm.exception))
         self.assertEqual(len(self.requests), 3)
         self.assertEqual(len(err.getvalue().splitlines()), 3)
@@ -486,16 +497,17 @@ class ChatRetryTest(FakeServerMixin, unittest.TestCase):
 
     def test_uses_retry_delays(self):
         self.start_server(non_json())
-        with mock.patch.object(analyze, "RETRY_DELAYS", [7, 9]), \
-                contextlib.redirect_stderr(io.StringIO()):
-            with self.assertRaises(ValueError):
-                analyze.chat_retry("lbl", self.url, "m", "s", "u")
+        with (
+            mock.patch.object(analyze, "RETRY_DELAYS", [7, 9]),
+            contextlib.redirect_stderr(io.StringIO()),
+            self.assertRaises(ValueError),
+        ):
+            analyze.chat_retry("lbl", self.url, "m", "s", "u")
         self.assertEqual([c.args[0] for c in self.sleep.call_args_list], [0, 7, 9])
 
     def test_unreachable_raises_oserror(self):
-        with contextlib.redirect_stderr(io.StringIO()) as err:
-            with self.assertRaises(OSError):
-                analyze.chat_retry("lbl", closed_port_url(), "m", "s", "u")
+        with contextlib.redirect_stderr(io.StringIO()) as err, self.assertRaises(OSError):
+            analyze.chat_retry("lbl", closed_port_url(), "m", "s", "u")
         self.assertEqual(len(err.getvalue().splitlines()), 3)
 
 
@@ -530,11 +542,18 @@ class MainTest(FakeServerMixin, unittest.TestCase):
             return f.read()
 
     def run_main(self, *args, url=None):
-        argv = ["analyze.py", "--report-dir", self.report_dir, "--url", url or self.url,
-                "--known-issues", self.known, *args]
+        argv = [
+            "analyze.py",
+            "--report-dir",
+            self.report_dir,
+            "--url",
+            url or self.url,
+            "--known-issues",
+            self.known,
+            *args,
+        ]
         out, err = io.StringIO(), io.StringIO()
-        with mock.patch.object(sys, "argv", argv), contextlib.redirect_stdout(out), \
-                contextlib.redirect_stderr(err):
+        with mock.patch.object(sys, "argv", argv), contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             rc = analyze.main()
         return rc, out.getvalue(), err.getvalue()
 
@@ -554,17 +573,22 @@ class MainTest(FakeServerMixin, unittest.TestCase):
         body = self.requests[0][1]
         self.assertEqual(body["messages"][1]["content"], header + "\n\n" + "\n".join(blocks))
         self.assertTrue(body["messages"][0]["content"].startswith(analyze.SYSTEM_PROMPT))
-        self.assertEqual(self.read_analysis("palvelin", "20261001-000000"), "\n".join([
-            "=== palvelin 20261001-000000 ===",
-            f"model: {analyze.DEFAULT_MODEL}",
-            "chunks: 1",
-            "summary: One failure.",
-            "",
-            "[high] demo0 failed",
-            "  Twice.",
-        ]) + "\n")
-        self.assertEqual(self.all_files(), ["palvelin/20261001-000000.analysis.txt",
-                                            "palvelin/20261001-000000.txt"])
+        self.assertEqual(
+            self.read_analysis("palvelin", "20261001-000000"),
+            "\n".join(
+                [
+                    "=== palvelin 20261001-000000 ===",
+                    f"model: {analyze.DEFAULT_MODEL}",
+                    "chunks: 1",
+                    "summary: One failure.",
+                    "",
+                    "[high] demo0 failed",
+                    "  Twice.",
+                ]
+            )
+            + "\n",
+        )
+        self.assertEqual(self.all_files(), ["palvelin/20261001-000000.analysis.txt", "palvelin/20261001-000000.txt"])
 
     def test_multi_chunk(self):
         chunk_res = [result(f"Chunk {i}.", [issue(title=f"t{i}")]) for i in range(1, 10)]
@@ -605,8 +629,11 @@ class MainTest(FakeServerMixin, unittest.TestCase):
         text = self.read_analysis("vakoilu", "20261001-000000")
         self.assertIn("\nmodel: -\n", text)
         self.assertIn("\nchunks: 0\n", text)
-        self.assertEqual(text, "=== vakoilu 20261001-000000 ===\nmodel: -\nchunks: 0\n"
-                               "summary: No entries were selected in this report.\n\nno issues\n")
+        self.assertEqual(
+            text,
+            "=== vakoilu 20261001-000000 ===\nmodel: -\nchunks: 0\n"
+            "summary: No entries were selected in this report.\n\nno issues\n",
+        )
 
     def test_already_analyzed_and_rerun(self):
         self.start_server(ok())
@@ -630,8 +657,7 @@ class MainTest(FakeServerMixin, unittest.TestCase):
         self.add_report("palvelin", "20261001-000000")
         self.run_main()
         system = self.requests[0][1]["messages"][0]["content"]
-        self.assertTrue(system.endswith(
-            "\nKnown issues:\n- palvelin: ata1 link errors\n- vakoilu: swap missing\n"))
+        self.assertTrue(system.endswith("\nKnown issues:\n- palvelin: ata1 link errors\n- vakoilu: swap missing\n"))
         self.assertNotIn("comment", system.split("Known issues:")[1])
 
     def test_known_issues_missing_file(self):
@@ -668,8 +694,7 @@ class MainTest(FakeServerMixin, unittest.TestCase):
         self.assertTrue(os.path.exists(self.analysis_path("vakoilu", "20261001-000000")))
         self.assertIn("palvelin/20261001-000000: reply does not match the schema", err)
         self.assertNotIn("stopping", err)
-        self.assertEqual(out.splitlines(), ["palvelin/20261002-000000: analyzed",
-                                            "vakoilu/20261001-000000: analyzed"])
+        self.assertEqual(out.splitlines(), ["palvelin/20261002-000000: analyzed", "vakoilu/20261001-000000: analyzed"])
 
     def test_reply_without_message_skips_report(self):
         # KeyError from a malformed reply is a bad reply for this report, not a reason to stop
@@ -727,8 +752,9 @@ class MainTest(FakeServerMixin, unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertEqual(out, "vakoilu/20261001-000000: analyzed\n")
         self.assertEqual(len(self.requests), 1)
-        self.assertEqual([f for f in self.all_files() if f.endswith(".analysis.txt")],
-                         ["vakoilu/20261001-000000.analysis.txt"])
+        self.assertEqual(
+            [f for f in self.all_files() if f.endswith(".analysis.txt")], ["vakoilu/20261001-000000.analysis.txt"]
+        )
 
     def test_unknown_host_exits_2(self):
         self.start_server(ok())
@@ -748,8 +774,7 @@ class MainTest(FakeServerMixin, unittest.TestCase):
             f.write("stray\n")
         rc, out, err = self.run_main()
         self.assertEqual(rc, 0, err)
-        self.assertEqual(out.splitlines(), ["palvelin/20261001-000000: analyzed",
-                                            "seuranta/20261001-000000: analyzed"])
+        self.assertEqual(out.splitlines(), ["palvelin/20261001-000000: analyzed", "seuranta/20261001-000000: analyzed"])
         self.assertEqual(len(self.requests), 2)
         self.assertFalse(os.path.exists(os.path.join(self.report_dir, "20261001-000000.analysis.txt")))
 

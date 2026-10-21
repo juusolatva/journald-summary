@@ -5,12 +5,13 @@ import stat
 import subprocess
 import sys
 import tempfile
+import types
 import unittest
 from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import logfilter  # noqa: E402
+import logfilter
 
 SCRIPT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "logfilter.py")
 
@@ -84,8 +85,7 @@ class NormalizeTest(unittest.TestCase):
         return logfilter.normalize(msg)
 
     def test_ipv4(self):
-        self.assertEqual(self.norm("connect from 192.0.2.10 port 22"),
-                         ("connect from <IP> port <N>", ["192.0.2.10"]))
+        self.assertEqual(self.norm("connect from 192.0.2.10 port 22"), ("connect from <IP> port <N>", ["192.0.2.10"]))
         self.assertEqual(self.norm("to 203.0.113.5:443"), ("to <IP>:<N>", ["203.0.113.5"]))
 
     def test_ipv6(self):
@@ -135,22 +135,25 @@ class NormalizeTest(unittest.TestCase):
         self.assertEqual(self.norm("at 9:05:01.5 x"), ("at <TIME> x", []))
 
     def test_ipv6_with_decimal_groups_not_eaten_by_time(self):
-        self.assertEqual(self.norm("from 2001:db8::12:34:56 port 22"),
-                         ("from <IP> port <N>", ["2001:db8::12:34:56"]))
+        self.assertEqual(self.norm("from 2001:db8::12:34:56 port 22"), ("from <IP> port <N>", ["2001:db8::12:34:56"]))
 
     def test_ipv6_with_two_char_groups_not_eaten_by_mac(self):
-        self.assertEqual(self.norm("peer 2001:db8:aa:bb:cc:dd:ee:ff up"),
-                         ("peer <IP> up", ["2001:db8:aa:bb:cc:dd:ee:ff"]))
+        self.assertEqual(
+            self.norm("peer 2001:db8:aa:bb:cc:dd:ee:ff up"), ("peer <IP> up", ["2001:db8:aa:bb:cc:dd:ee:ff"])
+        )
 
 
 class ExtraNormalizersTest(unittest.TestCase):
     def test_invalid_user(self):
-        self.assertEqual(logfilter.normalize("Invalid user someone from 192.0.2.7 port 2222"),
-                         ("Invalid user <USER> from <IP> port <N>", ["192.0.2.7"]))
+        self.assertEqual(
+            logfilter.normalize("Invalid user someone from 192.0.2.7 port 2222"),
+            ("Invalid user <USER> from <IP> port <N>", ["192.0.2.7"]),
+        )
 
     def test_veth(self):
-        self.assertEqual(logfilter.normalize("veth1a2b3c4: entered promiscuous mode")[0],
-                         "veth<ID>: entered promiscuous mode")
+        self.assertEqual(
+            logfilter.normalize("veth1a2b3c4: entered promiscuous mode")[0], "veth<ID>: entered promiscuous mode"
+        )
 
     def test_dumped_core_truncated(self):
         msg = "Process 4321 (worker) of user 1000 dumped core.\n\nStack trace of thread 4321:\n#0 0x00007f in foo"
@@ -192,18 +195,20 @@ class HelpersTest(unittest.TestCase):
 
 
 class RulesTest(unittest.TestCase):
-    SAMPLES = {
-        "unit_failed": "app.service: Failed with result 'exit-code'.",
-        "oom": "Out of memory: Killed process 1234 (worker)",
-        "disk_full": "write failed: No space left on device",
-        "io_error": "blk_update_request: I/O error, dev sdz, sector 2048",
-        "fs_readonly": "EXT4-fs (sdz1): Remounting filesystem read-only",
-        "kernel_crash": "Kernel panic - not syncing: Fatal exception",
-        "crash": "worker[1234]: segfault at 0 ip 00005 sp 00007 error 4",
-        "hardware": "mce: [Hardware Error]: Machine check events logged",
-        "undervoltage": "hwmon hwmon1: Undervoltage detected!",
-        "thermal": "CPU0: Core temperature above threshold, cpu clock throttled",
-    }
+    SAMPLES = types.MappingProxyType(
+        {
+            "unit_failed": "app.service: Failed with result 'exit-code'.",
+            "oom": "Out of memory: Killed process 1234 (worker)",
+            "disk_full": "write failed: No space left on device",
+            "io_error": "blk_update_request: I/O error, dev sdz, sector 2048",
+            "fs_readonly": "EXT4-fs (sdz1): Remounting filesystem read-only",
+            "kernel_crash": "Kernel panic - not syncing: Fatal exception",
+            "crash": "worker[1234]: segfault at 0 ip 00005 sp 00007 error 4",
+            "hardware": "mce: [Hardware Error]: Machine check events logged",
+            "undervoltage": "hwmon hwmon1: Undervoltage detected!",
+            "thermal": "CPU0: Core temperature above threshold, cpu clock throttled",
+        }
+    )
 
     def matched(self, msg, ident="app"):
         return {name for name, i, rx in logfilter.RULES_RX if (i is None or i == ident) and rx.search(msg)}
@@ -234,7 +239,7 @@ class RulesTest(unittest.TestCase):
 
 
 class NoiseTest(unittest.TestCase):
-    DROPPED = [
+    DROPPED = (
         (None, "s6-rc: info: service legacy-cont-init: starting"),
         ("firewalld", "WARNING: COMMAND_FAILED: '/usr/sbin/iptables -w10 -t nat -D DOCKER -i x' failed"),
         ("firewalld", "WARNING: COMMAND_FAILED: '/usr/sbin/ip6tables -w10 -t nat -D OUTPUT' failed: no chain"),
@@ -268,8 +273,14 @@ class NoiseTest(unittest.TestCase):
         ("kernel", "examplemod: module uses symbols from proprietary module othermod, inheriting taint."),
         ("kernel", "Disabling lock debugging due to kernel taint"),
         ("kernel", "NVRM: loading NVIDIA UNIX x86_64 Kernel Module  999.99  Synthetic"),
-        ("kernel", "ACPI BIOS Error (bug): Could not resolve symbol [\\_SB.PCI0.XYZ], AE_NOT_FOUND (20240101/dswload2-162)"),
-        ("kernel", "ACPI Error: Aborting method \\_SB.PCI0.XYZ due to previous error (AE_NOT_FOUND) (20240101/psparse-529)"),
+        (
+            "kernel",
+            "ACPI BIOS Error (bug): Could not resolve symbol [\\_SB.PCI0.XYZ], AE_NOT_FOUND (20240101/dswload2-162)",
+        ),
+        (
+            "kernel",
+            "ACPI Error: Aborting method \\_SB.PCI0.XYZ due to previous error (AE_NOT_FOUND) (20240101/psparse-529)",
+        ),
         ("kernel", "ACPI Warning: SystemIO range 0x0B00-0x0B08 conflicts with OpRegion 0x0B00-0x0B0F (\\GSA1.SMBI)"),
         ("kernel", "MDS CPU bug present. See https://www.kernel.org/doc/html/latest/admin-guide/hw-vuln/mds.html"),
         ("kernel", "ENERGY_PERF_BIAS: Set to 'normal', was 'performance'"),
@@ -283,19 +294,24 @@ class NoiseTest(unittest.TestCase):
         ("kernel", "kauditd_printk_skb: 12 callbacks suppressed"),
         ("systemd", "lm_sensors.service: Referenced but unset environment variable evaluates to an empty string: X"),
         ("systemd-oomd", "No swap; memory pressure usage will be degraded"),
-        ("systemd-networkd", "eth0: Found matching .network file, based on potentially unpredictable interface name: /x"),
+        (
+            "systemd-networkd",
+            "eth0: Found matching .network file, based on potentially unpredictable interface name: /x",
+        ),
         ("irqbalance", "Cannot change IRQ 42 affinity: Permission denied"),
         ("irqbalance", "IRQ 42 affinity is now unmanaged"),
         ("kernel", "Mem-Info:"),
         ("kernel", "Node 0 DMA free:1024kB"),
         ("app", "/package/admin/s6-overlay/libexec/preinit: info: container starting"),
         ("app", '{"level":"info","msg":"synthetic"}'),
-    ]
+    )
 
-    KEPT = [
+    KEPT = (
         ("kernel", "sd 0:0:0:0: Power-on or device reset occurred"),
-        ("systemd-journald", "File /var/log/journal/x/system.journal corrupted or uncleanly shut down, "
-                             "renaming and replacing."),
+        (
+            "systemd-journald",
+            ("File /var/log/journal/x/system.journal corrupted or uncleanly shut down, renaming and replacing."),
+        ),
         ("kernel", "ACPI Error: something else"),
         ("kernel", "ACPI Error: Aborting method \\_SB.X due to previous error (AE_AML_OPERAND_TYPE)"),
         ("(udev-worker)", "sdz: Process '/usr/lib/udev/hdparm' failed with exit code 5."),
@@ -305,23 +321,25 @@ class NoiseTest(unittest.TestCase):
         ("kernel", "examplemod: tainting kernel"),
         ("app", '{"level":"error","msg":"synthetic"}'),
         ("app", "Started Daily Cleanup."),
-    ]
+    )
 
     # kernel-scoped NOISE entries must not drop the same text from other identifiers
-    KERNEL_ONLY = [
+    KERNEL_ONLY = (
         "[UFW BLOCK] IN=eth0 OUT= SRC=192.0.2.1",
         "RIP: 0010:x+0x1/0x2",
         "Code: 48 89",
         "Hardware name: Example",
         "kauditd_printk_skb: 1 callbacks suppressed",
         "ENERGY_PERF_BIAS: Set to 'normal'",
-    ]
+    )
 
     def test_every_noise_entry_has_a_sample(self):
         for i, (ident, rx) in enumerate(logfilter.NOISE_RX):
             with self.subTest(noise=rx.pattern):
-                self.assertTrue(any((ident is None or ident == (d or "anything")) and rx.search(m)
-                                    for d, m in self.DROPPED), f"NOISE[{i}] has no sample")
+                self.assertTrue(
+                    any((ident is None or ident == (d or "anything")) and rx.search(m) for d, m in self.DROPPED),
+                    f"NOISE[{i}] has no sample",
+                )
 
     def test_noise_drops(self):
         for ident, msg in self.DROPPED:
@@ -356,8 +374,9 @@ class E2EBase(unittest.TestCase):
         with open(fake, "w", encoding="utf-8") as f:
             f.write(FAKE_JOURNALCTL.format(python=sys.executable))
         os.chmod(fake, os.stat(fake).st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
-        self.env = dict(os.environ, PATH=self.bin + os.pathsep + os.environ.get("PATH", ""),
-                        PYTHONDONTWRITEBYTECODE="1")
+        self.env = dict(
+            os.environ, PATH=self.bin + os.pathsep + os.environ.get("PATH", ""), PYTHONDONTWRITEBYTECODE="1"
+        )
         self.env.pop("FAKE_FAIL_HOST", None)
 
     def set_entries(self, entries, host="palvelin"):
@@ -371,7 +390,7 @@ class E2EBase(unittest.TestCase):
         env = dict(self.env)
         if fail_host:
             env["FAKE_FAIL_HOST"] = fail_host
-        return subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=30)
+        return subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=30, check=False)
 
     def calls(self):
         path = os.path.join(self.bin, "args.log")
@@ -388,8 +407,7 @@ class E2EBase(unittest.TestCase):
             return f.read()
 
     def pattern_lines(self, out):
-        return [line for line in out.splitlines()
-                if line and not line.startswith(" ") and re.search(r" x\d+  ", line)]
+        return [line for line in out.splitlines() if line and not line.startswith(" ") and re.search(r" x\d+  ", line)]
 
     def pattern_line(self, out, text):
         """The pattern header line whose following 'pattern:' line contains text."""
@@ -559,10 +577,12 @@ class CliTest(E2EBase):
 
 class FilteringTest(E2EBase):
     def test_rule_overrides_noise(self):
-        self.set_entries([
-            entry(1, "s6-rc: info: service x: Failed with result 'exit-code'", prio=6),
-            entry(2, "s6-rc: info: service y successfully started", prio=6),
-        ])
+        self.set_entries(
+            [
+                entry(1, "s6-rc: info: service x: Failed with result 'exit-code'", prio=6),
+                entry(2, "s6-rc: info: service y successfully started", prio=6),
+            ]
+        )
         res = self.run_lf("palvelin")
         self.assertOk(res)
         self.assertIn("dropped as noise: 1", res.stdout)
@@ -571,14 +591,16 @@ class FilteringTest(E2EBase):
         self.assertIn("(1 with rule matches, 1 new)", res.stdout)
 
     def test_noise_dropped_regardless_of_priority(self):
-        self.set_entries([
-            entry(1, '{"level":"info","msg":"x"}', prio=3),
-            entry(2, "pam_unix(sudo:auth): conversation failed", prio=2, ident="sudo", unit=None),
-            # matches ALWAYS_INCLUDE as well as NOISE: NOISE wins
-            entry(3, "Startup finished in 1s (kernel) pam_unix(sudo:auth): x", prio=6),
-            kernel(4, "[UFW BLOCK] IN=eth0 SRC=192.0.2.9", prio=0),
-            entry(5, "real problem", prio=3),
-        ])
+        self.set_entries(
+            [
+                entry(1, '{"level":"info","msg":"x"}', prio=3),
+                entry(2, "pam_unix(sudo:auth): conversation failed", prio=2, ident="sudo", unit=None),
+                # matches ALWAYS_INCLUDE as well as NOISE: NOISE wins
+                entry(3, "Startup finished in 1s (kernel) pam_unix(sudo:auth): x", prio=6),
+                kernel(4, "[UFW BLOCK] IN=eth0 SRC=192.0.2.9", prio=0),
+                entry(5, "real problem", prio=3),
+            ]
+        )
         res = self.run_lf("palvelin")
         self.assertOk(res)
         self.assertIn("dropped as noise: 4", res.stdout)
@@ -587,16 +609,23 @@ class FilteringTest(E2EBase):
         self.assertNotIn("UFW", res.stdout)
 
     def test_priority_selection(self):
-        self.set_entries([
-            entry(1, "warn message", prio=4),
-            entry(2, "notice message", prio=5),
-            entry(3, "info message", prio=6),
-            entry(4, "Startup finished in 2.5s (kernel) + 3s (userspace) = 5.5s.", prio=6,
-                  ident="systemd", unit="init.scope"),
-            entry(5, "missing prio message", prio=None),
-            entry(6, "garbage prio message", PRIORITY="bogus"),
-            entry(7, "emerg message", prio=0),
-        ])
+        self.set_entries(
+            [
+                entry(1, "warn message", prio=4),
+                entry(2, "notice message", prio=5),
+                entry(3, "info message", prio=6),
+                entry(
+                    4,
+                    "Startup finished in 2.5s (kernel) + 3s (userspace) = 5.5s.",
+                    prio=6,
+                    ident="systemd",
+                    unit="init.scope",
+                ),
+                entry(5, "missing prio message", prio=None),
+                entry(6, "garbage prio message", PRIORITY="bogus"),
+                entry(7, "emerg message", prio=0),
+            ]
+        )
         res = self.run_lf("palvelin")
         self.assertOk(res)
         out = res.stdout
@@ -613,16 +642,42 @@ class FilteringTest(E2EBase):
     def test_normalization_collapses_patterns(self):
         tpl = "peer {ip4} {ip6} mac {mac} id {uuid} at {hexv} {hexb} n={n} {ts} {clock}"
         values = [
-            ("192.0.2.10", "2001:db8::1", "00:11:22:33:44:55", "123e4567-e89b-12d3-a456-426614174000",
-             "0x1f", "a1b2c3d4e5", "15ms", "2026-10-21T10:00:00Z", "10:00:00"),
-            ("198.51.100.7", "2001:db8:1::2", "66:77:88:99:aa:bb", "00000000-1111-2222-3333-44444444abcd",
-             "0xFFFF", "0123456789abcdef", "2048kB", "2026-10-22 11:22:33.5+03:00", "23:59:59"),
-            ("192.0.2.10", "2001:db8::1", "00:11:22:33:44:56", "123e4567-e89b-12d3-a456-426614174001",
-             "0x2", "ffff0000a", "7", "2026-10-23T01:02:03", "1:02:03"),
+            (
+                "192.0.2.10",
+                "2001:db8::1",
+                "00:11:22:33:44:55",
+                "123e4567-e89b-12d3-a456-426614174000",
+                "0x1f",
+                "a1b2c3d4e5",
+                "15ms",
+                "2026-10-21T10:00:00Z",
+                "10:00:00",
+            ),
+            (
+                "198.51.100.7",
+                "2001:db8:1::2",
+                "66:77:88:99:aa:bb",
+                "00000000-1111-2222-3333-44444444abcd",
+                "0xFFFF",
+                "0123456789abcdef",
+                "2048kB",
+                "2026-10-22 11:22:33.5+03:00",
+                "23:59:59",
+            ),
+            (
+                "192.0.2.10",
+                "2001:db8::1",
+                "00:11:22:33:44:56",
+                "123e4567-e89b-12d3-a456-426614174001",
+                "0x2",
+                "ffff0000a",
+                "7",
+                "2026-10-23T01:02:03",
+                "1:02:03",
+            ),
         ]
         keys = ("ip4", "ip6", "mac", "uuid", "hexv", "hexb", "n", "ts", "clock")
-        self.set_entries([entry(i + 1, tpl.format(**dict(zip(keys, v))), prio=3)
-                          for i, v in enumerate(values)])
+        self.set_entries([entry(i + 1, tpl.format(**dict(zip(keys, v))), prio=3) for i, v in enumerate(values)])
         res = self.run_lf("palvelin")
         self.assertOk(res)
         out = res.stdout
@@ -630,7 +685,7 @@ class FilteringTest(E2EBase):
         self.assertIn("  pattern: peer <IP> <IP> mac <MAC> id <UUID> at <HEX> <HEX> n=<N> <TIME> <TIME>", out)
         self.assertIn(" x3  ", self.pattern_lines(out)[0])
         self.assertIn("  top IPs: ", out)
-        top = [line for line in out.splitlines() if line.startswith("  top IPs: ")][0]
+        top = next(line for line in out.splitlines() if line.startswith("  top IPs: "))
         m = re.fullmatch(r"  top IPs: (.*) \((\d+) distinct\)", top)
         self.assertIsNotNone(m, top)
         self.assertEqual(m.group(2), "4")
@@ -647,12 +702,19 @@ class FilteringTest(E2EBase):
         self.assertNotIn("top IPs", res.stdout)
 
     def test_binary_and_repeated_fields(self):
-        self.set_entries([
-            entry(1, list(b"disk sdz: I/O error \xff here"), prio=3),
-            entry(2, ["first value", "second value"], PRIORITY=["3", "3"],
-                  ident=["myident", "other"], unit=["one.service", "two.service"]),
-            kernel(3, list("multi\nline kernel".encode()), prio=2),
-        ])
+        self.set_entries(
+            [
+                entry(1, list(b"disk sdz: I/O error \xff here"), prio=3),
+                entry(
+                    2,
+                    ["first value", "second value"],
+                    PRIORITY=["3", "3"],
+                    ident=["myident", "other"],
+                    unit=["one.service", "two.service"],
+                ),
+                kernel(3, list(b"multi\nline kernel"), prio=2),
+            ]
+        )
         res = self.run_lf("palvelin")
         self.assertOk(res)
         out = res.stdout
@@ -666,12 +728,14 @@ class FilteringTest(E2EBase):
         self.assertIn(" crit kernel x1", self.pattern_line(out, "multi | line kernel"))
 
     def test_non_json_lines_skipped(self):
-        self.set_entries([
-            "this is not json",
-            entry(1, "valid warning", prio=4),
-            "{broken",
-            "",
-        ])
+        self.set_entries(
+            [
+                "this is not json",
+                entry(1, "valid warning", prio=4),
+                "{broken",
+                "",
+            ]
+        )
         res = self.run_lf("palvelin")
         self.assertOk(res)
         self.assertIn("entries read: 1  (warning=1)", res.stdout)
@@ -707,8 +771,9 @@ class ReportFormatTest(E2EBase):
         lines = full.split("\n")
         self.assertEqual(lines[0], "=== palvelin ===")
         self.assertEqual(lines[1], "mode: normal (after saved cursor)")
-        self.assertEqual(lines[2], f"range: {logfilter.fmt_ts(BASE_TS + 2_000_000)} -> "
-                                   f"{logfilter.fmt_ts(BASE_TS + 9_000_000)}")
+        self.assertEqual(
+            lines[2], f"range: {logfilter.fmt_ts(BASE_TS + 2_000_000)} -> {logfilter.fmt_ts(BASE_TS + 9_000_000)}"
+        )
         self.assertEqual(lines[3], "entries read: 8  (crit=1 err=1 warning=4 notice=1 info=1)")
         self.assertEqual(lines[4], "dropped as noise: 0")
         self.assertEqual(lines[5], "selected: 7 entries in 5 patterns (1 with rule matches, 4 new)")
@@ -720,8 +785,11 @@ class ReportFormatTest(E2EBase):
         self.assertTrue(heads[2].startswith("[NEW] warning app.service x3  "), heads[2])
         self.assertTrue(heads[3].startswith("[NEW] warning app.service x1  "), heads[3])
         self.assertTrue(heads[4].startswith("crit app.service x1  "), heads[4])
-        self.assertEqual(heads[2], f"[NEW] warning app.service x3  {logfilter.fmt_ts(BASE_TS + 4_000_000)} -> "
-                                   f"{logfilter.fmt_ts(BASE_TS + 6_000_000)}")
+        self.assertEqual(
+            heads[2],
+            f"[NEW] warning app.service x3  {logfilter.fmt_ts(BASE_TS + 4_000_000)} -> "
+            f"{logfilter.fmt_ts(BASE_TS + 6_000_000)}",
+        )
         for i in range(7, 7 + 5 * 3, 3):
             self.assertTrue(lines[i + 1].startswith("  pattern: "), lines[i + 1])
             self.assertTrue(lines[i + 2].startswith("  example: "), lines[i + 2])

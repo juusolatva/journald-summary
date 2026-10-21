@@ -80,6 +80,8 @@ Automated tests live in `tests/` (`test_logfilter.py`, `test_analyze.py`, standa
 python3 -m unittest discover -s tests -v
 ```
 
+CI (`.github/workflows/ci.yml`) also runs `ruff check` and `ruff format --check` with the version pinned in `requirements-dev.lock`, and sends coverage to SonarQube Cloud. Code follows `ruff format` layout (line length 120, settings in `pyproject.toml`): run `ruff format` and `ruff check` before committing.
+
 The guidance below describes what the tests do and how to test by hand.
 
 Test with a fake `journalctl`: an executable script named `journalctl` in a temporary directory that prints JSON lines (one journal entry per line, with fields such as `__CURSOR`, `__REALTIME_TIMESTAMP`, `PRIORITY`, `MESSAGE`, `SYSLOG_IDENTIFIER`, `_SYSTEMD_UNIT`, `_TRANSPORT`, `_HOSTNAME`). Put that directory first in `PATH` and always pass a temporary `--state-dir` (the default is `/var/lib/logfilter`) and, when used, a temporary `--report-dir`.

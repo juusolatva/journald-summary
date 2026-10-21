@@ -10,4 +10,5 @@
 - Pattern aggregates are plain dicts (`source, template, example, prio, count, first, last, rules:set, ips:Counter`); `prio` keeps the minimum (most severe).
 - Journal field access always goes through `text()` to handle binary/repeated fields.
 - Timestamps are `__REALTIME_TIMESTAMP` microsecond ints, formatted via `fmt_ts`; seen.json values are local ISO with offset, `timespec="seconds"`.
+- Layout: `ruff format` (line length 120, `pyproject.toml`), and `ruff check` with ruff's default rule set; CI fails on either. Implicit string concatenation inside tuples/lists must be parenthesized (ISC004), e.g. the multi-line NOISE regexes. The deliberate broad `except Exception` in `logfilter.main()` carries `# noqa: BLE001`.
 - Strings: f-strings, double quotes. Finnish identifiers/hostnames kept verbatim.

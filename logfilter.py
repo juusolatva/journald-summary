@@ -70,14 +70,24 @@ NOISE = [
     ("kernel", r"^ (\? )?[\w.]+\+0x[0-9a-f]+/0x[0-9a-f]+"),  # stack trace frames
     ("kernel", r"^ </?TASK>$"),
     # register dump and context lines around a stack trace (the event itself is caught by RULES)
-    ("kernel", r"^(RIP|RSP|RAX|RDX|RBP|R10|R13|FS|CS|CR2|DR0|DR3|PKRU): |^Code: "
-               r"|^CPU: \d+ (UID: \d+ )?PID: \d+ Comm: |^Hardware name: "),
+    (
+        "kernel",
+        (
+            r"^(RIP|RSP|RAX|RDX|RBP|R10|R13|FS|CS|CR2|DR0|DR3|PKRU): |^Code: "
+            r"|^CPU: \d+ (UID: \d+ )?PID: \d+ Comm: |^Hardware name: "
+        ),
+    ),
     # boot-time firmware, driver and CPU messages that are the same on every boot
     ("kernel", r"taints kernel\.$|inheriting taint\.$|^Disabling lock debugging due to kernel taint$"),
     ("kernel", r"^NVRM: loading NVIDIA UNIX "),
-    ("kernel", r"^ACPI BIOS Error \(bug\): Could not resolve symbol "
-               r"|^ACPI Error: Aborting method .* due to previous error \(AE_NOT_FOUND\)"
-               r"|^ACPI Warning: SystemIO range .* conflicts with OpRegion "),
+    (
+        "kernel",
+        (
+            r"^ACPI BIOS Error \(bug\): Could not resolve symbol "
+            r"|^ACPI Error: Aborting method .* due to previous error \(AE_NOT_FOUND\)"
+            r"|^ACPI Warning: SystemIO range .* conflicts with OpRegion "
+        ),
+    ),
     ("kernel", r"admin-guide/hw-vuln/"),  # CPU vulnerability notices
     ("kernel", r"^ENERGY_PERF_BIAS: |^amd_pstate: the _CPC object is not present"),
     ("kernel", r": supply \w+ not found, using dummy regulator$"),
@@ -91,8 +101,13 @@ NOISE = [
     (None, r"Found matching \.network file, based on potentially unpredictable interface name"),
     (None, r"^Cannot change IRQ \d+ affinity: Permission denied$|^IRQ \d+ affinity is now unmanaged$"),
     # memory info dump after a page allocation failure
-    ("kernel", r"^(Mem-Info:|active_anon:|Node \d+ |lowmem_reserve\[\]:|\d+ total pagecache pages|\d+ pages "
-               r"|Free swap |Total swap |Memory cgroup min protection )"),
+    (
+        "kernel",
+        (
+            r"^(Mem-Info:|active_anon:|Node \d+ |lowmem_reserve\[\]:|\d+ total pagecache pages|\d+ pages "
+            r"|Free swap |Total swap |Memory cgroup min protection )"
+        ),
+    ),
     (None, r"^/package/admin/s6-overlay/libexec/preinit: info: "),  # container startup
     (None, r'^\{"level":"info"'),  # JSON info logs from containers (logged at err)
 ]
@@ -218,141 +233,192 @@ def write_atomic(path, content):
 # --- Main processing ---------------------------------------------------------
 
 
-def process_host(host, since, state_dir, report_dir):
-    host_dir = os.path.join(state_dir, host)
-    cursor_path = os.path.join(host_dir, "cursor")
-    seen_path = os.path.join(host_dir, "seen.json")
-    preview = since is not None
-
+def journal_command(host, since, cursor):
+    """Return the journalctl command and the report's mode description."""
     # --all: without it, fields over 4096 bytes (e.g. coredump stack traces) are output as null.
     cmd = ["journalctl", "--output=json", "--all", "--no-pager", "--quiet"] + HOSTS[host]
-    if preview:
-        cmd.append(f"--since={since}")
-        mode = f"preview (since {since}; state not updated)"
-    else:
-        cursor = read_file(cursor_path)
-        if cursor:
-            cmd.append(f"--after-cursor={cursor}")
-            mode = "normal (after saved cursor)"
-        else:
-            cmd.append(f"--since={INITIAL_SINCE}")
-            mode = f"normal (first run, since {INITIAL_SINCE})"
+    if since is not None:
+        return cmd + [f"--since={since}"], f"preview (since {since}; state not updated)"
+    if cursor:
+        return cmd + [f"--after-cursor={cursor}"], "normal (after saved cursor)"
+    return cmd + [f"--since={INITIAL_SINCE}"], f"normal (first run, since {INITIAL_SINCE})"
 
-    seen_raw = read_file(seen_path)
-    seen = json.loads(seen_raw) if seen_raw else {}
 
-    patterns = {}
-    by_prio = Counter()
-    total = noise = 0
-    first_ts = last_ts = None
-    last_cursor = None
+def entry_priority(entry):
+    try:
+        return int(text(entry.get("PRIORITY")))
+    except (TypeError, ValueError):
+        return 6
 
+
+def classify(ident, msg, prio):
+    """Apply RULES, NOISE and priority selection, in that order.
+
+    Returns (matched rule names, "selected" | "noise" | "skipped").
+    """
+    rules = [name for name, i, rx in RULES_RX if (i is None or i == ident) and rx.search(msg)]
+    if rules:
+        return rules, "selected"
+    if match_any(NOISE_RX, ident, msg):
+        return rules, "noise"
+    if prio > MAX_PRIORITY and not match_any(ALWAYS_RX, ident, msg):
+        return rules, "skipped"
+    return rules, "selected"
+
+
+def add_entry(patterns, entry, ident, msg, prio, ts, rules):
+    source = source_of(entry, ident)
+    template, ips = normalize(msg)
+    key = hashlib.sha1(f"{source}\0{template}".encode()).hexdigest()[:16]
+    p = patterns.get(key)
+    if p is None:
+        p = patterns[key] = {
+            "source": source,
+            "template": template,
+            "example": msg,
+            "prio": prio,
+            "count": 0,
+            "first": ts,
+            "last": ts,
+            "rules": set(),
+            "ips": Counter(),
+        }
+    p["count"] += 1
+    p["last"] = ts
+    p["prio"] = min(p["prio"], prio)
+    p["rules"].update(rules)
+    p["ips"].update(ips)
+
+
+def read_journal(cmd):
+    """Run journalctl and aggregate the selected entries into patterns."""
+    stats = {
+        "patterns": {},
+        "by_prio": Counter(),
+        "total": 0,
+        "noise": 0,
+        "first_ts": None,
+        "last_ts": None,
+        "last_cursor": None,
+    }
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, text=True, encoding="utf-8", errors="replace")
     for line in proc.stdout:
         try:
             entry = json.loads(line)
         except json.JSONDecodeError:
             continue
-        total += 1
-        last_cursor = entry.get("__CURSOR", last_cursor)
+        stats["total"] += 1
+        stats["last_cursor"] = entry.get("__CURSOR", stats["last_cursor"])
         ts = int(entry.get("__REALTIME_TIMESTAMP", 0))
-        if first_ts is None:
-            first_ts = ts
-        last_ts = ts
-        try:
-            prio = int(text(entry.get("PRIORITY")))
-        except (TypeError, ValueError):
-            prio = 6
-        by_prio[prio] += 1
+        if stats["first_ts"] is None:
+            stats["first_ts"] = ts
+        stats["last_ts"] = ts
+        prio = entry_priority(entry)
+        stats["by_prio"][prio] += 1
 
         msg = text(entry.get("MESSAGE")) or ""
         ident = text(entry.get("SYSLOG_IDENTIFIER")) or text(entry.get("_COMM")) or ""
-
-        rules = [name for name, i, rx in RULES_RX if (i is None or i == ident) and rx.search(msg)]
-        if not rules:
-            if match_any(NOISE_RX, ident, msg):
-                noise += 1
-                continue
-            if prio > MAX_PRIORITY and not match_any(ALWAYS_RX, ident, msg):
-                continue
-
-        source = source_of(entry, ident)
-        template, ips = normalize(msg)
-        key = hashlib.sha1(f"{source}\0{template}".encode()).hexdigest()[:16]
-        p = patterns.get(key)
-        if p is None:
-            p = patterns[key] = {
-                "source": source, "template": template, "example": msg,
-                "prio": prio, "count": 0, "first": ts, "last": ts,
-                "rules": set(), "ips": Counter(),
-            }
-        p["count"] += 1
-        p["last"] = ts
-        p["prio"] = min(p["prio"], prio)
-        p["rules"].update(rules)
-        p["ips"].update(ips)
+        rules, verdict = classify(ident, msg, prio)
+        if verdict == "noise":
+            stats["noise"] += 1
+        elif verdict == "selected":
+            add_entry(stats["patterns"], entry, ident, msg, prio, ts, rules)
 
     proc.wait()
     if proc.returncode != 0:
         raise RuntimeError(f"journalctl exited with status {proc.returncode}")
+    return stats
 
-    # --- Report ---
-    new_keys = [k for k in patterns if k not in seen]
+
+def sort_key(key, p, new_keys):
+    """Rule matches first, then new patterns, then by priority and count."""
+    return (0 if p["rules"] else 1, 0 if key in new_keys else 1, p["prio"], -p["count"])
+
+
+def pattern_lines(key, p, new_keys):
+    tags = [f"[rule:{r}]" for r in sorted(p["rules"])]
+    if key in new_keys:
+        tags.append("[NEW]")
+    prio_name = PRIO_NAMES[p["prio"]] if 0 <= p["prio"] < 8 else str(p["prio"])
+    head = " ".join(tags + [prio_name, p["source"], f"x{p['count']}"])
+    lines = [
+        f"{head}  {fmt_ts(p['first'])} -> {fmt_ts(p['last'])}",
+        f"  pattern: {one_line(p['template'])}",
+        f"  example: {one_line(p['example'])}",
+    ]
+    if p["ips"]:
+        top = ", ".join(f"{ip} x{n}" for ip, n in p["ips"].most_common(5))
+        lines.append(f"  top IPs: {top} ({len(p['ips'])} distinct)")
+    return lines
+
+
+def render_report(host, mode, stats, seen, new_keys):
+    """Return the full report text, footer included."""
+    patterns = stats["patterns"]
     selected = sum(p["count"] for p in patterns.values())
     rule_count = sum(1 for p in patterns.values() if p["rules"])
-
-    out = [f"=== {host} ===", f"mode: {mode}"]
-    if total:
-        out.append(f"range: {fmt_ts(first_ts)} -> {fmt_ts(last_ts)}")
+    if stats["total"]:
+        range_line = f"range: {fmt_ts(stats['first_ts'])} -> {fmt_ts(stats['last_ts'])}"
     else:
-        out.append("range: no entries")
+        range_line = "range: no entries"
+    by_prio = stats["by_prio"]
     prio_text = " ".join(f"{PRIO_NAMES[i]}={by_prio[i]}" for i in range(8) if by_prio[i])
-    out.append(f"entries read: {total}  ({prio_text or 'none'})")
-    out.append(f"dropped as noise: {noise}")
-    out.append(f"selected: {selected} entries in {len(patterns)} patterns "
-               f"({rule_count} with rule matches, {len(new_keys)} new)")
+    out = [
+        f"=== {host} ===",
+        f"mode: {mode}",
+        range_line,
+        f"entries read: {stats['total']}  ({prio_text or 'none'})",
+        f"dropped as noise: {stats['noise']}",
+        f"selected: {selected} entries in {len(patterns)} patterns ({rule_count} with rule matches, {len(new_keys)} new)",
+    ]
     if not seen:
         out.append("note: no saved patterns for this host yet, so every pattern is marked new")
     out.append("")
-
-    def sort_key(item):
-        k, p = item
-        return (0 if p["rules"] else 1, 0 if k in new_keys else 1, p["prio"], -p["count"])
-
-    for k, p in sorted(patterns.items(), key=sort_key):
-        tags = [f"[rule:{r}]" for r in sorted(p["rules"])]
-        if k in new_keys:
-            tags.append("[NEW]")
-        prio_name = PRIO_NAMES[p["prio"]] if 0 <= p["prio"] < 8 else str(p["prio"])
-        head = " ".join(tags + [prio_name, p["source"], f"x{p['count']}"])
-        out.append(f"{head}  {fmt_ts(p['first'])} -> {fmt_ts(p['last'])}")
-        out.append(f"  pattern: {one_line(p['template'])}")
-        out.append(f"  example: {one_line(p['example'])}")
-        if p["ips"]:
-            top = ", ".join(f"{ip} x{n}" for ip, n in p["ips"].most_common(5))
-            out.append(f"  top IPs: {top} ({len(p['ips'])} distinct)")
+    for k, p in sorted(patterns.items(), key=lambda item: sort_key(*item, new_keys)):
+        out.extend(pattern_lines(k, p, new_keys))
     report = "\n".join(out)
-    full = f"{report}\nreport size: {len(report)} characters\n"
+    return f"{report}\nreport size: {len(report)} characters\n"
+
+
+def save_state(seen, new_keys, seen_path, cursor_path, last_cursor):
+    now = datetime.now().astimezone().isoformat(timespec="seconds")
+    for k in new_keys:
+        seen[k] = now
+    write_atomic(seen_path, json.dumps(seen, indent=0))
+    if last_cursor:
+        write_atomic(cursor_path, last_cursor)
+
+
+def process_host(host, since, state_dir, report_dir):
+    host_dir = os.path.join(state_dir, host)
+    cursor_path = os.path.join(host_dir, "cursor")
+    seen_path = os.path.join(host_dir, "seen.json")
+    preview = since is not None
+
+    cmd, mode = journal_command(host, since, None if preview else read_file(cursor_path))
+    seen_raw = read_file(seen_path)
+    seen = json.loads(seen_raw) if seen_raw else {}
+    stats = read_journal(cmd)
+    new_keys = [k for k in stats["patterns"] if k not in seen]
+
+    full = render_report(host, mode, stats, seen, new_keys)
     if report_dir:
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         write_atomic(os.path.join(report_dir, host, f"{stamp}.txt"), full)
     else:
         print(full)
 
-    # --- Save state (normal mode only, after the report was produced) ---
+    # Save state in normal mode only, after the report was produced.
     if not preview:
-        now = datetime.now().astimezone().isoformat(timespec="seconds")
-        for k in new_keys:
-            seen[k] = now
-        write_atomic(seen_path, json.dumps(seen, indent=0))
-        if last_cursor:
-            write_atomic(cursor_path, last_cursor)
+        save_state(seen, new_keys, seen_path, cursor_path, stats["last_cursor"])
 
 
 def main():
     ap = argparse.ArgumentParser(description="Condense journald logs per host into patterns.")
     ap.add_argument("hosts", nargs="*", help=f"hosts to process (default: all of {', '.join(HOSTS)})")
-    ap.add_argument("--since", help="preview a time window (journalctl --since syntax) without using or updating saved state")
+    ap.add_argument(
+        "--since", help="preview a time window (journalctl --since syntax) without using or updating saved state"
+    )
     ap.add_argument("--state-dir", default=DEFAULT_STATE_DIR, help=f"state directory (default: {DEFAULT_STATE_DIR})")
     ap.add_argument("--report-dir", help="write each report to REPORT_DIR/<host>/<timestamp>.txt instead of stdout")
     args = ap.parse_args()
@@ -368,7 +434,7 @@ def main():
     for host in hosts:
         try:
             process_host(host, args.since, args.state_dir, args.report_dir)
-        except Exception as exc:  # report and continue with the other hosts
+        except Exception as exc:  # noqa: BLE001 - report any failure and continue with the other hosts
             print(f"{host}: {exc}", file=sys.stderr)
             status = 1
     return status
