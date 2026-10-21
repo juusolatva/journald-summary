@@ -2,7 +2,7 @@
 
 - Plain functions, no classes, no type hints. Short docstrings only where behavior is non-obvious; sparse inline comments.
 - Section banners: `# --- Name ---...` padded with dashes to ~79 cols. Keep new code in the matching section; all tunables stay in Configuration.
-- Tunable list shapes (consumed positionally by `compile_list`/`match_any`; regex must be the last element):
+- Tunable list shapes. `RULES`/`ALWAYS_INCLUDE`/`NOISE` are consumed positionally by `compile_list`/`match_any`, so their regex must be the last element; `EXTRA_NORMALIZERS` is unpacked as `(rx, rep)`:
   - `RULES`: `(name, ident_or_None, regex)`
   - `ALWAYS_INCLUDE`, `NOISE`: `(ident_or_None, regex)`
   - `EXTRA_NORMALIZERS`: `(regex, replacement)`

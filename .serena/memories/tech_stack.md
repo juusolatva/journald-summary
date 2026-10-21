@@ -1,9 +1,15 @@
 # Tech stack
 
-- Python 3, standard library only (argparse, subprocess, json, re, ipaddress, hashlib, collections.Counter, datetime). No packaging: no pyproject/requirements, no venv.
+- Python 3.10+ (ruff `target-version = "py310"`, CI matrix 3.10-3.14). Standard library only at runtime (argparse, subprocess, json, re, ipaddress, hashlib, collections.Counter, datetime). Not a package: `pyproject.toml` holds only ruff and coverage settings, and `requirements.txt` only documents that there are no runtime deps.
 - `analyze.py`: stdlib `urllib.request` + `json` against the Ollama native API (`/api/chat`, structured output via a `format` JSON schema). The server was Ollama 0.40.2 on 2026-10-21.
 - basedpyright (strict) floods both scripts with missing-annotation warnings and spurious `LiteralString`/`builtins.str` "errors". The project deliberately has no type hints, so only real errors matter.
-- External runtime dependency: `journalctl` binary (systemd), invoked as `journalctl --output=json --no-pager --quiet [host args] (--since=... | --after-cursor=...)`.
+- External runtime dependency: `journalctl` binary (systemd), invoked as `journalctl --output=json --all --no-pager --quiet [host args] (--since=... | --after-cursor=...)`. `--all` is required, otherwise fields over 4096 bytes (coredump traces) come out as null.
 - Target host: `palvelin` (openSUSE Tumbleweed), run with sudo. Dev machine differs (Fedora); never run against real journals.
-- No test suite, linter config, or CI in repo. Tests are ad hoc with a fake `journalctl` (see `mem:suggested_commands`).
+- Tests: stdlib unittest suites in `tests/` (commands and harnesses: `mem:suggested_commands`). `pytest.ini` (`testpaths = tests`, `pythonpath = .`) lets pytest collect them unchanged.
+- Dev tools (never runtime deps): `requirements-dev.txt` (`pytest>=8.0`, `pytest-cov>=7.1`, `ruff==0.17.1`) plus the hashed universal lock `requirements-dev.lock`. After editing requirements-dev.txt, regenerate it with `uv pip compile --universal --generate-hashes --no-header --python-version 3.10 requirements-dev.txt -o requirements-dev.lock`. That reproduces the committed lock byte for byte; without `--python-version 3.10` the 3.10-only deps (exceptiongroup, tomli, typing-extensions) disappear.
+- CI (`.github/workflows/ci.yml`; runs on push to main, PRs and manual dispatch):
+  - Ruff job (`astral-sh/ruff-action`, version read from `requirements-dev.txt`): `ruff check --output-format=github` and `ruff format --check --diff`.
+  - Test job on Python 3.10-3.14: installs the lock with `--require-hashes --only-binary :all:` and runs `python -m pytest --cov --cov-report=xml`. Coverage config in `pyproject.toml`: branch, `omit = tests/*`, and `patch = ["subprocess"]` so that the logfilter.py runs started by the E2E tests are measured.
+  - SonarQube Cloud job (`sonar-project.properties`, `SONAR_TOKEN` secret; Automatic Analysis must stay disabled in SonarQube Cloud) scans using the 3.14 `coverage.xml`.
+  - Taint findings on CLI arguments are False Positive by policy: `mem:analyze`.
 - Serena LS: `python_basedpyright` (set in `.serena/project.yml`); Serena launches it via `uvx -p 3.13 --from basedpyright==<pinned>`, so uv needs a Python 3.13 interpreter available.

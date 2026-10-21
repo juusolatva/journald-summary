@@ -3,9 +3,9 @@
 Authoritative rules: `AGENTS.md` (CLAUDE.md just includes it). Hard constraints, CLI, report format, test-data policy live there; read it before any change.
 
 ## Source map
-- `logfilter.py` — stage 1 (single script, ~360 lines). Sections in order:
+- `logfilter.py` — stage 1 (single script, ~440 lines). Sections in order:
   - Configuration: `REMOTE_DIR`, `HOSTS` (host -> extra journalctl args), `DEFAULT_STATE_DIR`, `INITIAL_SINCE`, `MAX_PRIORITY`, `RULES`, `ALWAYS_INCLUDE`, `NOISE`, `EXTRA_NORMALIZERS`.
-  - Normalization: `RX_*` regexes, `PRIO_NAMES`, `compile_list` -> `RULES_RX`/`ALWAYS_RX`/`NOISE_RX`/`EXTRA_RX` (compiled at import), `normalize(msg) -> (template, ips)`.
+  - Normalization: `RX_*` regexes, `PRIO_NAMES`, `compile_list` -> `RULES_RX`/`ALWAYS_RX`/`NOISE_RX`, plus `EXTRA_RX` (own comprehension; all compiled at import), `normalize(msg) -> (template, ips)`.
   - Entry helpers: `text` (journal JSON value -> str; int list = binary bytes, str list = repeated field -> first), `source_of`, `match_any`, `fmt_ts`, `one_line`.
   - State: `read_file`, `write_atomic` (`path.tmp` + `os.replace`, dir mode 0700).
   - Main processing is split into small helpers. Keep each one under SonarQube's cognitive-complexity limit of 15; the old monolithic `process_host` scored 51. `journal_command` builds the cmd and mode line. `entry_priority` parses priority. `classify` applies the filter order. `add_entry` aggregates a pattern. `read_journal` runs journalctl and returns a stats dict. `sort_key` and `pattern_lines` produce a pattern block, `render_report` the full text, and `save_state` writes seen.json and the cursor. `process_host(host, since, state_dir, report_dir)` wires them: read the cursor (normal mode only) and seen.json, read the journal, render, write the report (stdout or atomic file `<report_dir>/<host>/<YYYYmmdd-HHMMSS>.txt`), then save state.
@@ -14,6 +14,7 @@ Authoritative rules: `AGENTS.md` (CLAUDE.md just includes it). Hard constraints,
 - `systemd/logfilter.service` (oneshot, root, `ProtectSystem=strict`, `StateDirectory=logfilter`, reports to `/var/lib/logfilter/reports`) + `systemd/logfilter.timer` (daily, `Persistent=true`). Script installed as `/usr/local/bin/logfilter.py`.
 - `analyze.py` — stage 2: sends the report files to Ollama and writes `<stamp>.analysis.txt` next to each report. All LLM/HTTP code lives there, never in `logfilter.py`. Same style as `logfilter.py` (configuration section first, plain functions). Invariants (chunking, error classes, retry/stop rules): `mem:analyze`.
 - `systemd/analyze.service` (oneshot, `Restart=on-failure` every 30 min, `IPAddressAllow=localhost`). `logfilter.service` has `Wants=analyze.service`, and analyze is ordered `After=logfilter.service`, so it runs after every logfilter run, also when one host failed.
+- `tests/test_logfilter.py`, `tests/test_analyze.py` — stdlib unittest suites (also collected by pytest via `pytest.ini`). Harness internals and run commands: `mem:suggested_commands`. CI and dev-tool config (`.github/workflows/ci.yml`, `pyproject.toml`, `pytest.ini`, `requirements*.txt`, `requirements-dev.lock`, `sonar-project.properties`): `mem:tech_stack`.
 
 ## Non-obvious invariants
 - Filter order inside `classify()`: RULES (ident-scoped or `None`) -> NOISE -> priority/ALWAYS_INCLUDE. Rule match skips both later checks.
@@ -24,7 +25,7 @@ Authoritative rules: `AGENTS.md` (CLAUDE.md just includes it). Hard constraints,
 - `report size` footer counts the report without the footer line itself.
 
 ## Further memories
-- Language/runtime/tooling facts: `mem:tech_stack`.
+- Language, runtime and tooling facts, CI jobs, and dev tools (ruff, pytest, hashed lock): `mem:tech_stack`.
 - Code style and idioms to match when editing `logfilter.py`: `mem:conventions`.
-- Fake-journalctl test harness recipe and run commands: `mem:suggested_commands`.
+- Test suites, the fake-journalctl and fake-Ollama harness recipes, and the ruff, pytest and dev-tool install commands: `mem:suggested_commands`.
 - Checklist before declaring a task done: `mem:task_completion`.

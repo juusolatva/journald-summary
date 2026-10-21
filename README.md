@@ -8,7 +8,7 @@ This is stage 1 of a log analysis pipeline. Stage 2, `analyze.py`, sends the rep
 
 ## Requirements
 
-- Python 3 (standard library only)
+- Python 3.10 or newer (standard library only)
 - `journalctl` (systemd)
 - Root access, because reading the journals requires it
 
@@ -54,7 +54,7 @@ Each entry goes through these steps in this order:
 
 ### Normalization and deduplication
 
-Selected messages are normalized: the `EXTRA_NORMALIZERS` run first, then MAC addresses, timestamps, UUIDs, IPv4/IPv6 addresses, hex values and numbers are replaced with placeholders (`<MAC>`, `<TIME>`, `<UUID>`, `<IP>`, `<HEX>`, `<N>`). Entries with the same source (systemd unit, syslog identifier or `kernel`) and the same normalized template form one pattern. IP addresses are counted per pattern.
+Selected messages are normalized: the `EXTRA_NORMALIZERS` run first (for example, the defaults replace Docker veth interface names with `veth<ID>` and libata register dumps with `<REGS>`, and drop coredump stack traces), then IPv4/IPv6 addresses, MAC addresses, timestamps, UUIDs, hex values and numbers are replaced with placeholders (`<IP>`, `<MAC>`, `<TIME>`, `<UUID>`, `<HEX>`, `<N>`). Entries with the same source (systemd unit, syslog identifier or `kernel`) and the same normalized template form one pattern. IP addresses are counted per pattern.
 
 A pattern is **new** if its key is not yet in the host's `seen.json`.
 
@@ -118,17 +118,17 @@ The identifier is matched against `SYSLOG_IDENTIFIER` (or `_COMM` if that is mis
 
 ## Analysis (stage 2)
 
-`analyze.py` reads the reports written with `--report-dir`, sends each one to an Ollama model and writes the result next to the report as `<host>/<YYYYmmdd-HHMMSS>.analysis.txt`. A report counts as analyzed once that file exists, so a report whose analysis failed is tried again on the next run. Python 3 standard library only.
+`analyze.py` reads the reports written with `--report-dir`, sends each one to an Ollama model and writes the result next to the report as `<host>/<YYYYmmdd-HHMMSS>.analysis.txt`. A report counts as analyzed once that file exists, so a report whose analysis failed is tried again on the next run. Python 3.10 or newer, standard library only.
 
 ```
-./analyze.py [HOST ...] [--report-dir PATH] [--url URL] [--model MODEL] [--known-issues PATH]
+sudo ./analyze.py [HOST ...] [--report-dir PATH] [--url URL] [--model MODEL] [--known-issues PATH]
 ```
 
 | Option | Meaning |
 |---|---|
 | `HOST ...` | Hosts to process. Default: every directory in the report directory. |
 | `--report-dir PATH` | Report directory. Default: `/var/lib/logfilter/reports`. |
-| `--url URL` | Ollama server, an `http://` or `https://` URL (anything else exits with status 2). Default: `http://localhost:11434`. |
+| `--url URL` | Ollama server, an `http://` or `https://` URL with a host (anything else exits with status 2). Default: `http://localhost:11434`. |
 | `--model MODEL` | Ollama model. Default: `qwen3:4b-instruct-2507-q8_0`. |
 | `--known-issues PATH` | Known issues file. Default: `/etc/logfilter/known-issues.txt`. |
 
@@ -205,6 +205,23 @@ The automated tests in `tests/` use only the standard library (`unittest`), synt
 ```
 python3 -m unittest discover -s tests -v
 ```
+
+The tests also run under pytest (settings in `pytest.ini` and `pyproject.toml`). The development tools (pytest, pytest-cov, ruff) are listed in `requirements-dev.txt` and pinned with hashes in `requirements-dev.lock`. Install them (for example in a virtual environment) and run the same checks as CI:
+
+```
+python3 -m pip install --require-hashes -r requirements-dev.lock
+python3 -m pytest --cov
+ruff check
+ruff format --check
+```
+
+Code follows the `ruff format` layout (line length 120, settings in `pyproject.toml`). After changing `requirements-dev.txt`, regenerate the lock with:
+
+```
+uv pip compile --universal --generate-hashes --no-header --python-version 3.10 requirements-dev.txt -o requirements-dev.lock
+```
+
+CI (`.github/workflows/ci.yml`) runs `ruff check` and `ruff format --check`, the tests with coverage on Python 3.10 to 3.14, and a SonarQube Cloud scan.
 
 For manual testing:
 

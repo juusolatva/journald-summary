@@ -10,10 +10,20 @@ Stage 2, `analyze.py`, reads the report files and sends them, in chunks when nee
 
 ## CLI
 
+`logfilter.py`:
+
 - `hosts`: optional positional host names (default: all hosts in `HOSTS`).
 - `--since <window>`: preview mode for a time window using `journalctl --since` syntax.
 - `--state-dir <path>`: state storage root directory (default: `/var/lib/logfilter`).
 - `--report-dir <path>`: write each host's report to `<report-dir>/<host>/<YYYYmmdd-HHMMSS>.txt` instead of stdout. Not allowed with `--since`.
+
+`analyze.py`:
+
+- `hosts`: optional positional host names (default: every subdirectory of the report directory). A host without a report directory is an error (exit status 2).
+- `--report-dir <path>`: report directory (default: `/var/lib/logfilter/reports`).
+- `--url <url>`: Ollama server URL (default: `http://localhost:11434`). Must be an `http://` or `https://` URL with a host; anything else is an error (exit status 2).
+- `--model <name>`: Ollama model (default: `qwen3:4b-instruct-2507-q8_0`).
+- `--known-issues <path>`: known issues file, one issue per line, empty lines and `#` lines ignored (default: `/etc/logfilter/known-issues.txt`).
 
 ## Environment
 
@@ -26,7 +36,7 @@ Stage 2, `analyze.py`, reads the report files and sends them, in chunks when nee
 
 ## Hard constraints
 
-- Python 3, standard library only. No third-party packages, no `python-systemd`, no other languages.
+- Python 3.10 or newer, standard library only, for `logfilter.py`, `analyze.py` and the tests (`requirements.txt` lists no runtime dependencies). No third-party packages, no `python-systemd`, no other languages. The only exception is development and CI tooling (`pytest`, `pytest-cov`, `ruff`) in `requirements-dev.txt`, pinned with hashes in `requirements-dev.lock`; never import it from the scripts or tests.
 - Read the journal only through `journalctl --output=json` via `subprocess`. Never parse `journalctl` text output: it is locale-dependent (palvelin prints Finnish month names such as `loka` and `syys`).
 - No databases. State is plain files in `<state-dir>/<host>/` (default `/var/lib/logfilter/<host>/`):
   - `cursor`: last processed journal cursor string.
@@ -67,7 +77,7 @@ Structure per host:
 - Do only what is asked. Do not add features, options, refactors, or "improvements" that were not requested.
 - Necessary changes outside the request are allowed only if required for the task to work. Explain each one.
 - For every change, state what changed and why.
-- Do not change the report format unless asked. The LLM stage will consume it. If a requested change affects the format, say so explicitly.
+- Do not change the report format unless asked. The LLM stage consumes it (`split_report` and `SYSTEM_PROMPT` in `analyze.py`). If a requested change affects the format or the normalization placeholders, say so explicitly and update `analyze.py` to match.
 - Prefer the simplest working solution.
 
 ## Testing
@@ -80,7 +90,7 @@ Automated tests live in `tests/` (`test_logfilter.py`, `test_analyze.py`, standa
 python3 -m unittest discover -s tests -v
 ```
 
-CI (`.github/workflows/ci.yml`) also runs `ruff check` and `ruff format --check` with the version pinned in `requirements-dev.lock`, and sends coverage to SonarQube Cloud. Code follows `ruff format` layout (line length 120, settings in `pyproject.toml`): run `ruff format` and `ruff check` before committing.
+CI (`.github/workflows/ci.yml`) also runs `ruff check` and `ruff format --check` with the ruff version pinned in `requirements-dev.txt`, runs the tests with `pytest --cov` on Python 3.10 to 3.14 (tools installed from `requirements-dev.lock`), and sends coverage to SonarQube Cloud (`sonar-project.properties`). Code follows `ruff format` layout (line length 120, settings in `pyproject.toml`): run `ruff format` and `ruff check` before committing. After changing `requirements-dev.txt`, regenerate the lock with `uv pip compile --universal --generate-hashes --no-header --python-version 3.10 requirements-dev.txt -o requirements-dev.lock`. SonarQube taint findings on CLI arguments (path traversal, SSRF, command argument injection) are accepted as false positives; do not "fix" them by restricting legitimate paths or URLs.
 
 The guidance below describes what the tests do and how to test by hand.
 
