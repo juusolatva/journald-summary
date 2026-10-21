@@ -1,5 +1,12 @@
 # journald-summary
 
+[![CI](https://github.com/juusolatva/journald-summary/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/juusolatva/journald-summary/actions/workflows/ci.yml)
+[![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=juusolatva_journald-summary&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=juusolatva_journald-summary)
+[![Coverage](https://sonarcloud.io/api/project_badges/measure?project=juusolatva_journald-summary&metric=coverage)](https://sonarcloud.io/summary/new_code?id=juusolatva_journald-summary)
+[![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
+[![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12%20%7C%203.13%20%7C%203.14-blue)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/github/license/juusolatva/journald-summary)](LICENSE)
+
 `logfilter.py` condenses systemd journal logs from a few Linux servers into a short report per host. It filters and deduplicates entries without calling an LLM: similar messages become one pattern with a count, a time range and an example. The aim is to make failures easy to spot.
 
 The goal is to spot software and hardware problems (failed units, crashes, disk, memory, filesystem, thermal and power issues, misconfiguration). Security monitoring (intrusion detection, auditing, login attempts, scanning) is out of scope; dedicated tools such as auditd cover it.
