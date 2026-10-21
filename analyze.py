@@ -134,11 +134,13 @@ def split_report(text):
 
 def make_chunks(header, blocks):
     """Pack pattern blocks into chunks of at most CHUNK_CHARS, each with the header."""
-    groups, cur, size = [], [], len(header)
+    # Room for the blank line after the header and a possible "chunk: i/n" line.
+    base = len(header) + len("\n\n") + len("\nchunk: 999/999")
+    groups, cur, size = [], [], base
     for b in blocks:
         if cur and size + len(b) + 1 > CHUNK_CHARS:
             groups.append(cur)
-            cur, size = [], len(header)
+            cur, size = [], base
         cur.append(b)
         size += len(b) + 1
     if cur:

@@ -148,11 +148,13 @@ def normalize(msg):
 
     for rx, rep in EXTRA_RX:
         msg = rx.sub(rep, msg)
+    # IPs first: RX_MAC and RX_TIME would eat groups of a valid IPv6 address. MACs and
+    # clock times are not valid IPs, so ip_rep leaves them for the regexes below.
+    msg = RX_IPV4.sub(ip_rep, msg)
+    msg = RX_IPV6.sub(ip_rep, msg)
     msg = RX_MAC.sub("<MAC>", msg)  # before RX_TIME, which would match the last three octets
     msg = RX_TIME.sub("<TIME>", msg)
     msg = RX_UUID.sub("<UUID>", msg)
-    msg = RX_IPV4.sub(ip_rep, msg)
-    msg = RX_IPV6.sub(ip_rep, msg)
     msg = RX_HEX.sub("<HEX>", msg)
     msg = RX_NUM.sub("<N>", msg)
     return msg, ips

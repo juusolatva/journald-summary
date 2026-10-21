@@ -1,5 +1,8 @@
 # Suggested commands
 
+- Test suite (stdlib unittest, ~5 s, no root, no network beyond 127.0.0.1): `python3 -m unittest discover -s tests -v`
+  - `tests/test_logfilter.py`: unit tests (normalize, text, source_of, RULES/NOISE samples) plus end-to-end subprocess runs with a fake `journalctl` generated per test (`E2EBase`). `NoiseTest.test_every_noise_entry_has_a_sample` / `RulesTest.test_every_rule_has_a_sample` fail when a new NOISE or RULES entry has no synthetic sample, so add one.
+  - `tests/test_analyze.py`: an in-process fake Ollama server (`FakeServerMixin`, port 0, scripted replies) and `MainTest` calling `analyze.main()` with patched `sys.argv` and `RETRY_DELAYS`. `setUpModule` disables proxies and lowers `REQUEST_TIMEOUT`.
 - Syntax check: `python3 -m py_compile logfilter.py analyze.py`
 - Optional type/lint check (not project-mandated): `basedpyright logfilter.py`
 - Production run (target host only, never in dev/tests): `sudo ./logfilter.py [hosts...] [--since WINDOW] [--state-dir DIR] [--report-dir DIR]`

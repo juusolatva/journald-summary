@@ -74,6 +74,14 @@ Structure per host:
 
 Do not run the script against real journals, and do not create or modify anything under `/var/lib/logfilter/`.
 
+Automated tests live in `tests/` (`test_logfilter.py`, `test_analyze.py`, standard library `unittest`, synthetic data only). Run them from the repository root after every change, and add or update tests along with any behavior change:
+
+```
+python3 -m unittest discover -s tests -v
+```
+
+The guidance below describes what the tests do and how to test by hand.
+
 Test with a fake `journalctl`: an executable script named `journalctl` in a temporary directory that prints JSON lines (one journal entry per line, with fields such as `__CURSOR`, `__REALTIME_TIMESTAMP`, `PRIORITY`, `MESSAGE`, `SYSLOG_IDENTIFIER`, `_SYSTEMD_UNIT`, `_TRANSPORT`, `_HOSTNAME`). Put that directory first in `PATH` and always pass a temporary `--state-dir` (the default is `/var/lib/logfilter`) and, when used, a temporary `--report-dir`.
 
 When invoking `logfilter.py` in tests, specify `palvelin` as a positional argument unless testing multi-host dispatch, to avoid unexpected calls for remote hosts.

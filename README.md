@@ -200,6 +200,14 @@ sudo systemctl daemon-reload
 
 ## Testing
 
+The automated tests in `tests/` use only the standard library (`unittest`), synthetic data, a fake `journalctl` and a fake Ollama server on `127.0.0.1`. They do not need root and do not touch real journals or `/var/lib/logfilter`. Run them from the repository root:
+
+```
+python3 -m unittest discover -s tests -v
+```
+
+For manual testing:
+
 Do not test against real journals or the real state directory. Use a fake `journalctl` that prints synthetic JSON entries, and temporary state and report directories:
 
 ```
