@@ -392,7 +392,7 @@ class E2EBase(unittest.TestCase):
             env["FAKE_FAIL_HOST"] = fail_host
         return subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=30, check=False)
 
-    def calls(self):
+    def journalctl_calls(self):
         path = os.path.join(self.bin, "args.log")
         if not os.path.exists(path):
             return []
@@ -433,7 +433,7 @@ class NormalModeTest(E2EBase):
         self.set_entries(self.first_entries())
         res = self.run_lf("palvelin")
         self.assertOk(res)
-        calls = self.calls()
+        calls = self.journalctl_calls()
         self.assertEqual(len(calls), 1)
         self.assertIn(f"--since={logfilter.INITIAL_SINCE}", calls[0])
         self.assertFalse(any(a.startswith("--after-cursor") for a in calls[0]))
@@ -474,7 +474,7 @@ class NormalModeTest(E2EBase):
         self.set_entries(first + second)
         res = self.run_lf("palvelin")
         self.assertOk(res)
-        calls = self.calls()
+        calls = self.journalctl_calls()
         self.assertEqual(len(calls), 2)
         self.assertIn("--after-cursor=s=synthetic;i=3", calls[1])
         self.assertFalse(any(a.startswith("--since") for a in calls[1]))
@@ -527,7 +527,7 @@ class PreviewModeTest(E2EBase):
         self.assertIn("mode: preview (since 1 hour ago; state not updated)", res.stdout)
         self.assertIn("[NEW]", res.stdout)
         self.assertFalse(os.path.exists(self.state))
-        call = self.calls()[0]
+        call = self.journalctl_calls()[0]
         self.assertIn("--since=1 hour ago", call)
         self.assertFalse(any(a.startswith("--after-cursor") for a in call))
 
@@ -544,7 +544,7 @@ class PreviewModeTest(E2EBase):
         self.set_entries(old + [entry(3, "fresh warning", prio=4)])
         res = self.run_lf("palvelin", "--since=2 days ago")
         self.assertOk(res)
-        call = self.calls()[1]
+        call = self.journalctl_calls()[1]
         self.assertIn("--since=2 days ago", call)
         self.assertFalse(any(a.startswith("--after-cursor") for a in call))
         self.assertIn("entries read: 3", res.stdout)
@@ -564,14 +564,14 @@ class CliTest(E2EBase):
         res = self.run_lf("palvelin", "--since=1 hour ago", f"--report-dir={self.reports}")
         self.assertEqual(res.returncode, 2)
         self.assertIn("--report-dir cannot be used with --since", res.stderr)
-        self.assertEqual(self.calls(), [])
+        self.assertEqual(self.journalctl_calls(), [])
         self.assertFalse(os.path.exists(self.reports))
 
     def test_unknown_host_rejected(self):
         res = self.run_lf("palvelin", "nosuchhost")
         self.assertEqual(res.returncode, 2)
         self.assertIn("unknown host(s): nosuchhost", res.stderr)
-        self.assertEqual(self.calls(), [])
+        self.assertEqual(self.journalctl_calls(), [])
         self.assertFalse(os.path.exists(self.state))
 
 
@@ -879,7 +879,7 @@ class MultiHostTest(E2EBase):
                 self.assertEqual(len(json.loads(self.read_state("seen.json", host))), 1)
         self.assertFalse(os.path.exists(os.path.join(self.state, "vakoilu")))
 
-        calls = self.calls()
+        calls = self.journalctl_calls()
         self.assertEqual(len(calls), len(logfilter.HOSTS))
         local = [c for c in calls if not any(a.startswith("_HOSTNAME=") for a in c)]
         self.assertEqual(len(local), 1)

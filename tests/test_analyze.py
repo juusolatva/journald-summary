@@ -506,8 +506,9 @@ class ChatRetryTest(FakeServerMixin, unittest.TestCase):
         self.assertEqual([c.args[0] for c in self.sleep.call_args_list], [0, 7, 9])
 
     def test_unreachable_raises_oserror(self):
+        url = closed_port_url()
         with contextlib.redirect_stderr(io.StringIO()) as err, self.assertRaises(OSError):
-            analyze.chat_retry("lbl", closed_port_url(), "m", "s", "u")
+            analyze.chat_retry("lbl", url, "m", "s", "u")
         self.assertEqual(len(err.getvalue().splitlines()), 3)
 
 
@@ -763,6 +764,29 @@ class MainTest(FakeServerMixin, unittest.TestCase):
             self.run_main("palvelin", "nosuchhost")
         self.assertEqual(cm.exception.code, 2)
         self.assertEqual(self.requests, [])
+
+    def test_url_must_be_http_or_https(self):
+        self.start_server(ok())
+        self.add_report("palvelin", "20261001-000000")
+        for url in ("file:///etc/passwd", "ftp://127.0.0.1/", "gopher://127.0.0.1/", "127.0.0.1:11434", "http://"):
+            with self.subTest(url=url):
+                with self.assertRaises(SystemExit) as cm:
+                    self.run_main(url=url)
+                self.assertEqual(cm.exception.code, 2)
+        self.assertEqual(self.requests, [])
+        self.assertFalse(os.path.exists(self.analysis_path("palvelin", "20261001-000000")))
+
+    def test_url_scheme_case_insensitive_and_https_accepted(self):
+        self.start_server(ok())
+        self.add_report("palvelin", "20261001-000000")
+        rc, _, err = self.run_main(url=self.url.replace("http://", "HTTP://", 1))
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(len(self.requests), 1)
+        # https passes validation; an empty report needs no request, so no TLS server is required
+        self.add_report("vakoilu", "20261001-000000", n_patterns=0)
+        rc, _, err = self.run_main("vakoilu", url="https://127.0.0.1:1")
+        self.assertEqual(rc, 0, err)
+        self.assertTrue(os.path.exists(self.analysis_path("vakoilu", "20261001-000000")))
 
     def test_hosts_from_subdirectories_only(self):
         self.start_server(ok())

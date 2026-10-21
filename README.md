@@ -128,7 +128,7 @@ The identifier is matched against `SYSLOG_IDENTIFIER` (or `_COMM` if that is mis
 |---|---|
 | `HOST ...` | Hosts to process. Default: every directory in the report directory. |
 | `--report-dir PATH` | Report directory. Default: `/var/lib/logfilter/reports`. |
-| `--url URL` | Ollama server. Default: `http://localhost:11434`. |
+| `--url URL` | Ollama server, an `http://` or `https://` URL (anything else exits with status 2). Default: `http://localhost:11434`. |
 | `--model MODEL` | Ollama model. Default: `qwen3:4b-instruct-2507-q8_0`. |
 | `--known-issues PATH` | Known issues file. Default: `/etc/logfilter/known-issues.txt`. |
 

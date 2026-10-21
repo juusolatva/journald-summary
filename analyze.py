@@ -15,6 +15,7 @@ import os
 import re
 import sys
 import time
+import urllib.parse
 import urllib.request
 
 # --- Configuration -----------------------------------------------------------
@@ -276,6 +277,9 @@ def main():
     ap.add_argument("--model", default=DEFAULT_MODEL, help=f"Ollama model (default: {DEFAULT_MODEL})")
     ap.add_argument("--known-issues", default=KNOWN_ISSUES, help=f"known issues file (default: {KNOWN_ISSUES})")
     args = ap.parse_args()
+    url = urllib.parse.urlsplit(args.url)
+    if url.scheme not in ("http", "https") or not url.netloc:
+        ap.error(f"--url must be an http:// or https:// URL: {args.url}")
 
     hosts = args.hosts or sorted(
         d for d in os.listdir(args.report_dir) if os.path.isdir(os.path.join(args.report_dir, d))
