@@ -1,0 +1,21 @@
+# Version updates for the CI actions and the development tools.
+# Dependabot cannot update requirements-dev.lock: on a pip PR, regenerate it
+# (command in AGENTS.md) and push it to the PR branch before merging.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      actions:
+        patterns: ["*"]
+
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7

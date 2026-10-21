@@ -14,7 +14,7 @@ Authoritative rules: `AGENTS.md` (CLAUDE.md just includes it). Hard constraints,
 - `systemd/logfilter.service` (oneshot, root, `ProtectSystem=strict`, `StateDirectory=logfilter`, reports to `/var/lib/logfilter/reports`) + `systemd/logfilter.timer` (daily, `Persistent=true`). Script installed as `/usr/local/bin/logfilter.py`.
 - `analyze.py` — stage 2: sends the report files to Ollama and writes `<stamp>.analysis.txt` next to each report. All LLM/HTTP code lives there, never in `logfilter.py`. Same style as `logfilter.py` (configuration section first, plain functions). Invariants (chunking, error classes, retry/stop rules): `mem:analyze`.
 - `systemd/analyze.service` (oneshot, `Restart=on-failure` every 30 min, `IPAddressAllow=localhost`). `logfilter.service` has `Wants=analyze.service`, and analyze is ordered `After=logfilter.service`, so it runs after every logfilter run, also when one host failed.
-- `tests/test_logfilter.py`, `tests/test_analyze.py` — stdlib unittest suites (also collected by pytest via `pytest.ini`). Harness internals and run commands: `mem:suggested_commands`. CI and dev-tool config (`.github/workflows/ci.yml`, `pyproject.toml`, `pytest.ini`, `requirements*.txt`, `requirements-dev.lock`, `sonar-project.properties`): `mem:tech_stack`.
+- `tests/test_logfilter.py`, `tests/test_analyze.py` — stdlib unittest suites (also collected by pytest via `pytest.ini`). Harness internals and run commands: `mem:suggested_commands`. CI and dev-tool config (`.github/workflows/ci.yml`, `.github/dependabot.yml`, `pyproject.toml`, `pytest.ini`, `requirements*.txt`, `requirements-dev.lock`, `sonar-project.properties`): `mem:tech_stack`.
 
 ## Non-obvious invariants
 - Filter order inside `classify()`: RULES (ident-scoped or `None`) -> NOISE -> priority/ALWAYS_INCLUDE. Rule match skips both later checks.
@@ -25,7 +25,7 @@ Authoritative rules: `AGENTS.md` (CLAUDE.md just includes it). Hard constraints,
 - `report size` footer counts the report without the footer line itself.
 
 ## Further memories
-- Language, runtime and tooling facts, CI jobs, and dev tools (ruff, pytest, hashed lock): `mem:tech_stack`.
+- Language, runtime and tooling facts, CI jobs (action pinning), Dependabot and its lock caveat, and dev tools (ruff, pytest, hashed lock): `mem:tech_stack`.
 - Code style and idioms to match when editing `logfilter.py`: `mem:conventions`.
 - Test suites, the fake-journalctl and fake-Ollama harness recipes, and the ruff, pytest and dev-tool install commands: `mem:suggested_commands`.
 - Checklist before declaring a task done: `mem:task_completion`.

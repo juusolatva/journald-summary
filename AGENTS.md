@@ -64,7 +64,7 @@ Structure per host:
    - `selected: <count> entries in <patterns_count> patterns (<rules_count> with rule matches, <new_count> new)`
    - optional note if no saved patterns exist
 2. Blank line
-3. Patterns sorted by: has rule match (asc), is new (asc), minimum priority (asc), count (desc):
+3. Patterns sorted by: rule matches first, then new patterns, then minimum priority (most severe first), then count (desc):
    - `[rule:<name>]... [[NEW]] <priority_name> <source> x<count>  <first_iso> -> <last_iso>`
    - `  pattern: <normalized_template>`
    - `  example: <sample_message>`
@@ -90,7 +90,7 @@ Automated tests live in `tests/` (`test_logfilter.py`, `test_analyze.py`, standa
 python3 -m unittest discover -s tests -v
 ```
 
-CI (`.github/workflows/ci.yml`) also runs `ruff check` and `ruff format --check` with the ruff version pinned in `requirements-dev.txt`, runs the tests with `pytest --cov` on Python 3.10 to 3.14 (tools installed from `requirements-dev.lock`), and sends coverage to SonarQube Cloud (`sonar-project.properties`). Code follows `ruff format` layout (line length 120, settings in `pyproject.toml`): run `ruff format` and `ruff check` before committing. After changing `requirements-dev.txt`, regenerate the lock with `uv pip compile --universal --generate-hashes --no-header --python-version 3.10 requirements-dev.txt -o requirements-dev.lock`. SonarQube taint findings on CLI arguments (path traversal, SSRF, command argument injection) are accepted as false positives; do not "fix" them by restricting legitimate paths or URLs.
+CI (`.github/workflows/ci.yml`) also runs `ruff check` and `ruff format --check` with the ruff version pinned in `requirements-dev.txt`, runs the tests with `pytest --cov` on Python 3.10 to 3.14 (tools installed from `requirements-dev.lock`), and sends coverage to SonarQube Cloud (`sonar-project.properties`). Actions are pinned to full commit SHAs with a version comment. Dependabot (`.github/dependabot.yml`) opens weekly update PRs for the actions and for `requirements-dev.txt`; it cannot update `requirements-dev.lock`, so regenerate the lock on its pip PRs before merging. Code follows `ruff format` layout (line length 120, settings in `pyproject.toml`): run `ruff format` and `ruff check` before committing. After changing `requirements-dev.txt`, regenerate the lock with `uv pip compile --universal --generate-hashes --no-header --python-version 3.10 requirements-dev.txt -o requirements-dev.lock`. SonarQube taint findings on CLI arguments (path traversal, SSRF, command argument injection) are accepted as false positives; do not "fix" them by restricting legitimate paths or URLs.
 
 The guidance below describes what the tests do and how to test by hand.
 
