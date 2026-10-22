@@ -222,13 +222,13 @@ ruff check
 ruff format --check
 ```
 
-Code follows the `ruff format` layout (line length 120, settings in `pyproject.toml`). After changing `requirements-dev.txt`, regenerate the lock with:
+Code follows the `ruff format` layout (line length 120, settings in `pyproject.toml`). After changing `requirements-dev.txt`, regenerate the lock with the command below. `--upgrade` also updates the indirect dependencies, which Dependabot does not see, and `--exclude-newer "7 days"` matches the Dependabot cooldown:
 
 ```
-uv pip compile --universal --generate-hashes --no-header --python-version 3.10 requirements-dev.txt -o requirements-dev.lock
+uv pip compile --universal --generate-hashes --no-header --python-version 3.10 --upgrade --exclude-newer "7 days" requirements-dev.txt -o requirements-dev.lock
 ```
 
-CI (`.github/workflows/ci.yml`) runs `ruff check` and `ruff format --check`, the tests with coverage on Python 3.10 to 3.14, and a SonarQube Cloud scan. Dependabot (`.github/dependabot.yml`) opens weekly update PRs for the actions and for `requirements-dev.txt`. It cannot update `requirements-dev.lock`, so regenerate the lock with the command above on its pip PRs before merging.
+CI (`.github/workflows/ci.yml`) runs `ruff check` and `ruff format --check`, checks that `requirements-dev.lock` satisfies `requirements-dev.txt`, runs the tests with coverage on Python 3.10 to 3.14, and runs a SonarQube Cloud scan. Dependabot (`.github/dependabot.yml`) opens weekly update PRs, one for the actions and one for `requirements-dev.txt`. It cannot update `requirements-dev.lock`, so regenerate the lock with the command above on its pip PRs before merging; the test jobs fail until then.
 
 For manual testing:
 
