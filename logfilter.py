@@ -37,15 +37,17 @@ MAX_PRIORITY = 4
 
 # (rule name, SYSLOG_IDENTIFIER or None for any, regex on MESSAGE).
 # A match always selects the entry, even if it also matches NOISE.
+# Write "fixed-length A, then B later on the same line" as (?m)^(?=(.*?A))\1.*B, not A.*B: the lookahead does not
+# backtrack, so only the first A of each line is tried and a long line repeating A stays linear to search.
 RULES = [
     ("unit_failed", None, r"Failed with result|entered failed state"),
     ("oom", None, r"(?i)out of memory|oom-kill|invoked oom-killer"),
     ("disk_full", None, r"No space left on device"),
     ("io_error", None, r"(?i)I/O error|EXT4-fs error|BTRFS (error|critical)|critical medium error"),
-    ("fs_readonly", None, r"(?i)remount\w*.*read-only"),
+    ("fs_readonly", None, r"(?im)^(?=(.*?remount))\1.*read-only"),
     ("kernel_crash", None, r"Kernel panic|kernel BUG|Oops:|general protection fault|Call Trace:"),
     ("crash", None, r"segfault at|dumped core"),
-    ("hardware", None, r"(?i)hardware error|machine check events|\bEDAC\b.*\berror"),
+    ("hardware", None, r"(?im)hardware error|machine check events|^(?=(.*?\bEDAC\b))\1.*\berror"),
     ("undervoltage", None, r"(?i)under-?voltage"),
     ("thermal", None, r"(?i)temperature above threshold|thermal throttl"),
 ]
