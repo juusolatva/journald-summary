@@ -238,6 +238,34 @@ class RulesTest(unittest.TestCase):
         self.assertIn("unit_failed", self.matched("Unit app.service entered failed state."))
         self.assertIn("hardware", self.matched("EDAC MC0: 1 CE memory read error"))
 
+    def test_two_part_rules_match_like_dot_star(self):
+        # fs_readonly and the EDAC part of hardware are written to search in linear time; they must still
+        # match exactly where the plain A.*B form does
+        plain = {
+            "fs_readonly": re.compile(r"(?i)remount.*read-only"),
+            "hardware": re.compile(r"(?i)hardware error|machine check events|\bEDAC\b.*\berror"),
+        }
+        samples = (
+            "EXT4-fs (sdz1): Remounting filesystem read-only",
+            "remount x remount y READ-ONLY",
+            "remountread-only",
+            "remount\nread-only",
+            "read-only remount",
+            "first line\nremount x\nremount y read-only",
+            "EDAC MC0: 1 CE memory read error",
+            "EDAC EDAC x errors",
+            "EDAC\nerror",
+            "EDACx error",
+            "EDAC terror",
+            "error EDAC",
+            "first line\nEDAC x\nsecond EDAC MC1: UE error",
+        )
+        rules = {name: rx for name, _, rx in logfilter.RULES_RX}
+        for name, ref in plain.items():
+            for msg in samples:
+                with self.subTest(rule=name, msg=msg):
+                    self.assertEqual(bool(rules[name].search(msg)), bool(ref.search(msg)))
+
     def test_plain_message_matches_no_rule(self):
         self.assertEqual(self.matched("Started Daily Cleanup."), set())
 
@@ -591,6 +619,22 @@ class FilteringTest(E2EBase):
         head = self.pattern_line(res.stdout, "Failed with result")
         self.assertTrue(head.startswith("[rule:unit_failed] [NEW] info "), head)
         self.assertIn("(1 with rule matches, 1 new)", res.stdout)
+
+    def test_long_lines_repeating_rule_words(self):
+        # with backtracking regexes these took hours; run_lf's timeout fails the test if matching is slow again
+        self.set_entries(
+            [
+                entry(1, "remount " * 50_000, prio=6),
+                kernel(2, "EDAC " * 50_000, prio=6),
+                entry(3, "remount " * 50_000 + "read-only", prio=6),
+                kernel(4, "EDAC " * 50_000 + "error", prio=6),
+            ]
+        )
+        res = self.run_lf("palvelin")
+        self.assertOk(res)
+        self.assertIn("selected: 2 entries in 2 patterns (2 with rule matches, 2 new)", res.stdout)
+        self.assertIn("[rule:fs_readonly] [NEW] info app.service x1", res.stdout)
+        self.assertIn("[rule:hardware] [NEW] info kernel x1", res.stdout)
 
     def test_noise_dropped_regardless_of_priority(self):
         self.set_entries(
