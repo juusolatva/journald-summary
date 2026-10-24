@@ -6,6 +6,7 @@ import subprocess
 import sys
 import tempfile
 import types
+import unicodedata
 import unittest
 from datetime import datetime
 
@@ -201,6 +202,49 @@ class HelpersTest(unittest.TestCase):
         self.assertEqual(logfilter.one_line("x" * 400), "x" * 400)
         self.assertEqual(logfilter.one_line("x" * 401), "x" * 400 + " …")
         self.assertEqual(logfilter.one_line("abcdef", limit=3), "abc …")
+
+    def test_printable(self):
+        pr = logfilter.printable
+        self.assertEqual(pr("a\rb\nc"), "a\\rb\\nc")
+        self.assertEqual(pr("\x1b[2Kx\x7f\x85"), "\\x1b[2Kx\\x7f\\x85")
+        self.assertEqual(pr("a\u200bb\u2028c\u2029d\U000e0041"), "a\\u200bb\\u2028c\\u2029d\\U000e0041")
+        for kept in ("plain", "a\tb", r"dev-disk-by\x2duuid.device", "käyttäjä ✓ 😀", "a\u00a0b"):
+            with self.subTest(kept=kept):
+                self.assertEqual(pr(kept), kept)
+        for sep in "\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029":  # every str.splitlines() separator
+            with self.subTest(sep=sep):
+                self.assertEqual(pr(f"a{sep}b").splitlines(), [pr(f"a{sep}b")])
+        out = pr("".join(map(chr, range(sys.maxunicode + 1))))
+        self.assertEqual(len(out.splitlines()), 1)
+        self.assertEqual([c for c in out if c != "\t" and unicodedata.category(c) in ("Cc", "Cf", "Zl", "Zp")], [])
+
+    def test_one_line_escapes_and_limits_escaped_text(self):
+        self.assertEqual(logfilter.one_line("a\rb\nc\x1b"), "a\\rb | c\\x1b")
+        self.assertEqual(logfilter.one_line("\x1b" * 100), "\\x1b" * 100)
+        self.assertEqual(logfilter.one_line("\x1b" * 101), "\\x1b" * 100 + " …")
+        self.assertEqual(logfilter.one_line("ab\x1b", limit=4), "ab\\x …")
+
+    def test_one_line_large_input(self):
+        def escape_all(s):
+            s = s.replace("\n", " | ").translate(logfilter.escape_table())
+            return s if len(s) <= 400 else s[:400] + " …"
+
+        n = 1_000_000
+        for msg in ("x" * n, "\x1b" * n, "\u200b" * n, "\U000e0041" * n, "😀" + "\n\r" * (n // 2)):
+            with self.subTest(msg=msg[:2]):
+                self.assertEqual(logfilter.one_line(msg), escape_all(msg))
+
+    def test_clip_source(self):
+        clip, limit = logfilter.clip, logfilter.SOURCE_LIMIT
+        longest = logfilter.source_of({"_SYSTEMD_UNIT": "1a" * 125 + ".swap"}, "x")  # 255-character unit name
+        self.assertEqual(len(longest), 505)
+        for label in (longest, r"dev-disk-by\x2duuid-<N>.device", "session-<N>.scope", "kernel"):
+            with self.subTest(label=label):
+                self.assertEqual(clip(label, limit), label)
+        self.assertEqual(clip("a\nb\rc", limit), "a\\nb\\rc")
+        self.assertEqual(clip("y" * limit, limit), "y" * limit)
+        self.assertEqual(clip("y" * (limit + 1), limit), "y" * limit + " …")
+        self.assertEqual(clip("\U000e0041" * 1_000_000, limit), ("\\U000e0041" * 52)[:limit] + " …")
 
 
 class RulesTest(unittest.TestCase):
@@ -879,6 +923,37 @@ class ReportDirTest(E2EBase):
         self.assertIn("a warning", content)
         self.assertEqual(self.read_state("cursor"), "s=synthetic;i=1")
         self.assertTrue(os.path.exists(self.state_path("seen.json")))
+
+    def test_control_characters_do_not_forge_report_lines(self):
+        fake = "\rcrit fake.service x1\r  example: fake\x1b[2K"
+        self.set_entries(
+            [
+                entry(1, f"real{fake}", prio=3),
+                entry(2, "unit warning", prio=4, unit=f"evil.service\n{fake}"),
+                entry(3, "ident warning", prio=4, ident=f"evil\u2028{fake}", unit=None),
+                entry(4, "long ident", prio=4, ident="z" * 100_000, unit=None),
+            ]
+        )
+        self.assertOk(self.run_lf("palvelin", f"--report-dir={self.reports}"))
+        [name] = os.listdir(os.path.join(self.reports, "palvelin"))
+        with open(os.path.join(self.reports, "palvelin", name), encoding="utf-8") as f:  # universal newlines
+            content = f.read()
+        lines = content.splitlines()
+        in_template = r"\rcrit fake.service x1\r  example: fake\x1b[<N>"
+        in_source = r"\rcrit fake.service x<N>\r  example: fake\x1b[<N>K"
+
+        def block(n, prio, source, template, example):
+            ts = logfilter.fmt_ts(BASE_TS + n * 1_000_000)
+            return [f"[NEW] {prio} {source} x1  {ts} -> {ts}", f"  pattern: {template}", f"  example: {example}"]
+
+        expected = (
+            block(1, "err", "app.service", f"real{in_template}", r"real\rcrit fake.service x1\r  example: fake\x1b[2K")
+            + block(2, "warning", rf"evil.service\n{in_source}", "unit warning", "unit warning")
+            + block(3, "warning", rf"evil\u2028{in_source}", "ident warning", "ident warning")
+            + block(4, "warning", "z" * logfilter.SOURCE_LIMIT + " …", "long ident", "long ident")
+        )
+        self.assertEqual(lines[lines.index("") + 1 : -1], expected)
+        self.assertNotRegex(content, r"[\x00-\x08\x0b-\x1f\x7f\u2028]")
 
     def test_report_write_failure_saves_no_state(self):
         self.set_entries([entry(1, "a warning", prio=4)])

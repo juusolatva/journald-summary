@@ -72,6 +72,8 @@ Structure per host:
 4. Footer:
    - `report size: <char_count> characters`
 
+Journal-derived text (`<source>`, `<normalized_template>`, `<sample_message>`) must never break a report line: `split_report` in `analyze.py` reads the file with universal newlines. `one_line()` and `clip()` in `logfilter.py` handle this: newlines in messages become ` | `, every Cc/Cf/Zl/Zp character except tab is written as a visible escape (`printable()`), template and example are cut at 400 characters and the source at `SOURCE_LIMIT` (512), with ` …` marking a cut. Only a bounded prefix is escaped, so large fields cost no extra memory; keep it that way. Render any new journal-derived report field through these helpers.
+
 ## Scope and changes
 
 - Do only what is asked. Do not add features, options, refactors, or "improvements" that were not requested.
