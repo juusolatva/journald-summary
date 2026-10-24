@@ -103,7 +103,11 @@ note: no saved patterns for this host yet, so every pattern is marked new
 report size: 1411 characters
 ```
 
-Patterns are sorted so that rule matches come first, then new patterns, then by priority (most severe first) and by count (largest first). The stage 2 analysis (`analyze.py`) reads this format, so changes to it must be made with care.
+Patterns are sorted so that rule matches come first, then new patterns, then by priority (most severe first) and by count (largest first).
+
+Text taken from the journal (the source, `pattern:` and `example:`) is written on one line. Newlines in messages become ` | `. Control, format and line separator characters other than tab (for example CR, ESC and U+2028) are written as visible escapes such as `\r`, `\x1b` and `\u2028`, so a log line cannot add or overwrite report lines or send terminal escape sequences. `pattern:` and `example:` are cut at 400 characters and the source at 512 (longer than any valid unit name), with ` …` marking the cut. Backslashes are not escaped, so a literal `\x1b` in a message looks the same as an escaped ESC.
+
+The stage 2 analysis (`analyze.py`) reads this format, so changes to it must be made with care.
 
 ## Configuration
 

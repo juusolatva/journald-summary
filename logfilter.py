@@ -6,6 +6,7 @@ Prints one report per host to stdout.
 """
 
 import argparse
+import functools
 import hashlib
 import ipaddress
 import json
@@ -13,6 +14,7 @@ import os
 import re
 import subprocess
 import sys
+import unicodedata
 from collections import Counter
 from datetime import datetime
 
@@ -208,9 +210,36 @@ def fmt_ts(usec):
     return datetime.fromtimestamp(usec / 1_000_000).astimezone().isoformat(timespec="seconds")
 
 
-def one_line(s, limit=400):
-    s = s.replace("\n", " | ")
+# Longest source label shown in full: a valid unit name is under 256 characters (systemd UNIT_NAME_MAX), and
+# source_of() replacing digits with <N> at most about doubles that.
+SOURCE_LIMIT = 512
+
+
+@functools.cache
+def escape_table():
+    """str.translate table that escapes control, format and line separator characters, except tab."""
+    chars = (chr(c) for c in range(sys.maxunicode + 1))
+    return {
+        ord(ch): ch.encode("unicode_escape").decode("ascii")
+        for ch in chars
+        if ch != "\t" and unicodedata.category(ch) in ("Cc", "Cf", "Zl", "Zp")
+    }
+
+
+def printable(s):
+    """s with control, format and line separator characters (such as CR and ESC) written as visible escapes."""
+    return s if s.isprintable() else s.translate(escape_table())
+
+
+def clip(s, limit):
+    """printable(s) cut to limit characters, with " …" marking a cut."""
+    # Escaping never shortens text, so escaping the first limit + 1 characters is enough.
+    s = printable(s[: limit + 1])
     return s if len(s) <= limit else s[:limit] + " …"
+
+
+def one_line(s, limit=400):
+    return clip(s.replace("\n", " | "), limit)
 
 
 # --- State files -------------------------------------------------------------
@@ -342,7 +371,8 @@ def pattern_lines(key, p, new_keys):
     if key in new_keys:
         tags.append("[NEW]")
     prio_name = PRIO_NAMES[p["prio"]] if 0 <= p["prio"] < 8 else str(p["prio"])
-    head = " ".join(tags + [prio_name, p["source"], f"x{p['count']}"])
+    # A newline in the source is shown as \n, not as a " | " line break as in messages.
+    head = " ".join(tags + [prio_name, clip(p["source"], SOURCE_LIMIT), f"x{p['count']}"])
     lines = [
         f"{head}  {fmt_ts(p['first'])} -> {fmt_ts(p['last'])}",
         f"  pattern: {one_line(p['template'])}",
