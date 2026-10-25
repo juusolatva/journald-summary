@@ -36,7 +36,7 @@ Stage 2, `analyze.py`, reads the report files and sends them, in chunks when nee
 
 ## Hard constraints
 
-- Python 3.10 or newer, standard library only, for `logfilter.py`, `analyze.py` and the tests (`requirements.txt` lists no runtime dependencies). No third-party packages, no `python-systemd`, no other languages. The only exception is development and CI tooling (`pytest`, `pytest-cov`, `ruff`) in `requirements-dev.txt`, pinned with hashes in `requirements-dev.lock`; never import it from the scripts or tests.
+- Python 3.13 or newer, standard library only, for `logfilter.py`, `analyze.py` and the tests (`requirements.txt` lists no runtime dependencies). No third-party packages, no `python-systemd`, no other languages. The only exception is development and CI tooling (`pytest`, `pytest-cov`, `ruff`) in `requirements-dev.txt`, pinned with hashes in `requirements-dev.lock`; never import it from the scripts or tests.
 - Read the journal only through `journalctl --output=json` via `subprocess`. Never parse `journalctl` text output: it is locale-dependent (palvelin prints Finnish month names such as `loka` and `syys`).
 - No databases. State is plain files in `<state-dir>/<host>/` (default `/var/lib/logfilter/<host>/`):
   - `cursor`: last processed journal cursor string.
@@ -81,6 +81,7 @@ Journal-derived text (`<source>`, `<normalized_template>`, `<sample_message>`) m
 - For every change, state what changed and why.
 - Do not change the report format unless asked. The LLM stage consumes it (`split_report` and `SYSTEM_PROMPT` in `analyze.py`). If a requested change affects the format or the normalization placeholders, say so explicitly and update `analyze.py` to match.
 - Prefer the simplest working solution.
+- Commits are allowed; prefer opening a pull request from a branch over committing directly to `main`.
 
 ## Testing
 
@@ -92,7 +93,7 @@ Automated tests live in `tests/` (`test_logfilter.py`, `test_analyze.py`, standa
 python3 -m unittest discover -s tests -v
 ```
 
-CI (`.github/workflows/ci.yml`) also runs `ruff check` and `ruff format --check` with the ruff version pinned in `requirements-dev.txt`, runs the tests with `pytest --cov` on Python 3.10 to 3.14 (tools installed from `requirements-dev.lock`, after checking that the lock satisfies `requirements-dev.txt`), and sends coverage to SonarQube Cloud (`sonar-project.properties`). Actions are pinned to full commit SHAs with a version comment. Dependabot (`.github/dependabot.yml`) opens weekly update PRs, one for the actions and one for `requirements-dev.txt`; it cannot update `requirements-dev.lock`, so regenerate the lock on its pip PRs before merging (the test jobs fail until then). Code follows `ruff format` layout (line length 120, settings in `pyproject.toml`): run `ruff format` and `ruff check` before committing. After changing `requirements-dev.txt`, regenerate the lock with `uv pip compile --universal --generate-hashes --no-header --python-version 3.10 --upgrade --exclude-newer "7 days" requirements-dev.txt -o requirements-dev.lock` (`--upgrade` also updates the indirect dependencies, which Dependabot does not see; `--exclude-newer "7 days"` matches the Dependabot cooldown). SonarQube taint findings on CLI arguments (path traversal, SSRF, command argument injection) are accepted as false positives; do not "fix" them by restricting legitimate paths or URLs.
+CI (`.github/workflows/ci.yml`) also runs `ruff check` and `ruff format --check` with the ruff version pinned in `requirements-dev.txt`, runs the tests with `pytest --cov` on Python 3.13 and 3.14 (tools installed from `requirements-dev.lock`, after checking that the lock satisfies `requirements-dev.txt`), and sends coverage to SonarQube Cloud (`sonar-project.properties`). `.github/workflows/osv-scanner.yml` scans `requirements-dev.lock` with OSV-Scanner on pushes, PRs and a weekly schedule. Actions are pinned to full commit SHAs with a version comment. Dependabot (`.github/dependabot.yml`) opens weekly update PRs, one for the actions and one for `requirements-dev.txt`; it cannot update `requirements-dev.lock`, so regenerate the lock on its pip PRs before merging (the test jobs fail until then). Code follows `ruff format` layout (line length 120, settings in `pyproject.toml`): run `ruff format` and `ruff check` before committing. After changing `requirements-dev.txt`, regenerate the lock with `uv pip compile --universal --generate-hashes --no-header --python-version 3.13 --upgrade --exclude-newer "7 days" requirements-dev.txt -o requirements-dev.lock` (`--upgrade` also updates the indirect dependencies, which Dependabot does not see; `--exclude-newer "7 days"` matches the Dependabot cooldown). SonarQube taint findings on CLI arguments (path traversal, SSRF, command argument injection) are accepted as false positives; do not "fix" them by restricting legitimate paths or URLs.
 
 The guidance below describes what the tests do and how to test by hand.
 

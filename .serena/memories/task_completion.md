@@ -14,3 +14,4 @@
 4. If the report text or the normalization placeholders changed in any way, say so explicitly. The downstream stage (`analyze.py` `split_report` / `SYSTEM_PROMPT`) parses the report.
 5. Confirm no state was written outside the temp `--state-dir`, and nothing under `/var/lib/logfilter/`.
 6. Report what changed and why, per change; list any necessary out-of-scope edits with justification.
+7. Commits are allowed; prefer a branch and pull request over committing directly to `main`.
