@@ -10,11 +10,13 @@ import tempfile
 import threading
 import unittest
 import urllib.request
+from collections import Counter
 from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import analyze
+import logfilter
 
 # --- Synthetic data ----------------------------------------------------------
 
@@ -236,6 +238,77 @@ class SplitReportTest(unittest.TestCase):
         h, b = analyze.split_report("=== x ===\n\nerr a x1  t -> t\n  pattern: a\n  example: a\n")
         self.assertEqual(h, "=== x ===")
         self.assertEqual(b, ["err a x1  t -> t\n  pattern: a\n  example: a"])
+
+
+class LogfilterContractTest(unittest.TestCase):
+    """split_report must read the reports that logfilter.render_report really writes."""
+
+    def render(self, entries, seen=None):
+        patterns = {}
+        for msg, prio, unit in entries:
+            entry = {"_SYSTEMD_UNIT": unit}
+            rules, _ = logfilter.classify("app", msg, prio)
+            logfilter.add_entry(patterns, entry, "app", msg, prio, 1760000000000000, rules)
+        stats = {"patterns": patterns, "by_prio": Counter(p for _, p, _ in entries), "total": len(entries)}
+        stats.update(noise=0, first_ts=1760000000000000, last_ts=1760000000000000)
+        new_keys = [k for k in patterns if k not in (seen or {})]
+        return logfilter.render_report("palvelin", "normal (after saved cursor)", stats, seen or {}, new_keys)
+
+    def test_rendered_report_round_trip(self):
+        entries = [
+            ("x.service: Failed with result 'exit-code'.", 3, "x.service"),
+            ("connection from 192.0.2.10 failed", 4, "app.service"),
+            ("connection from 2001:db8::5 failed", 4, "app.service"),
+            ("multi\nline\r\nmessage\x1b[2K end", 2, "evil.service\n  example: forged"),
+            ("y" * 5000, 4, "app.service"),
+        ]
+        for seen in (None, {"0000000000000000": "2026-10-01T00:00:00+03:00"}):
+            with self.subTest(seen=seen):
+                report = self.render(entries, seen)
+                with tempfile.TemporaryDirectory() as tmp:  # read back like analyze_report, universal newlines
+                    path = os.path.join(tmp, "20261001-000000.txt")
+                    analyze.write_atomic(path, report)
+                    with open(path, encoding="utf-8") as f:
+                        header, blocks = analyze.split_report(f.read())
+
+                lines = report.split("\n")
+                self.assertEqual(header, "\n".join(lines[: lines.index("")]))
+                self.assertEqual(header.split("\n")[0], "=== palvelin ===")
+                self.assertEqual(header.endswith("every pattern is marked new"), seen is None)
+                self.assertEqual(len(blocks), len(entries) - 1)  # the two connection messages share a pattern
+                for b in blocks:
+                    head, *rest = b.split("\n")
+                    self.assertRegex(head, r"^(\[\S+\] )*(crit|err|warning) .+ x\d+  \S+ -> \S+$")
+                    self.assertEqual([x.split(": ")[0] for x in rest[:2]], ["  pattern", "  example"])
+                self.assertIn("  top IPs: 192.0.2.10 x1, 2001:db8::5 x1 (2 distinct)", "\n".join(blocks))
+                self.assertEqual("\n".join([header, "", *blocks]) + "\n", report.rsplit("report size: ", 1)[0])
+                self.assertEqual(analyze.make_chunks(header, blocks), ["\n\n".join([header, "\n".join(blocks)])])
+
+                # A limit that fits only the largest block alone: it gets its own chunk, smaller blocks share one.
+                limit = len(header) + len("\n\n") + len("\nchunk: 999/999") + max(map(len, blocks)) + 1
+                with mock.patch.object(analyze, "CHUNK_CHARS", limit):
+                    chunks = analyze.make_chunks(header, blocks)
+                self.assertTrue(1 < len(chunks) < len(blocks), len(chunks))
+                got = []
+                for i, chunk in enumerate(chunks, 1):
+                    self.assertLessEqual(len(chunk), limit)
+                    h, b = analyze.split_report(chunk)
+                    self.assertEqual(h, f"{header}\nchunk: {i}/{len(chunks)}")
+                    got.extend(b)
+                self.assertEqual(got, blocks)
+
+
+class WriteAtomicTest(unittest.TestCase):
+    def test_write_atomic(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "host", "20261001-000000.analysis.txt")
+            analyze.write_atomic(path, "first")
+            analyze.write_atomic(path, "second")
+            with self.assertRaises(UnicodeEncodeError):
+                analyze.write_atomic(path, "bad \ud800")
+            with open(path, encoding="utf-8") as f:
+                self.assertEqual(f.read(), "second")
+            self.assertEqual(os.listdir(os.path.dirname(path)), ["20261001-000000.analysis.txt"])
 
 
 class MakeChunksTest(unittest.TestCase):
