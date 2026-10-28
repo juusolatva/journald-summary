@@ -361,6 +361,7 @@ def main():
 
     status = 0
     for host, stamp, path in pending_reports(args.report_dir, hosts):
+        done, out = "analyzed", sys.stdout
         try:
             analysis = analyze_report(host, stamp, path, args.url, args.model, system)
         except (OSError, http.client.HTTPException) as exc:  # server unreachable: stop, retry later
@@ -378,11 +379,14 @@ def main():
                 "details": f"Gave up after {GIVE_UP_DAYS} days: {exc}. Read the report itself.",
             }
             analysis = render(host, stamp, "-", 0, {"summary": "Analysis failed.", "issues": [failed]})
+            done, out = f"older than {GIVE_UP_DAYS} days, gave up", sys.stderr
+        try:
             write_atomic(os.path.join(args.report_dir, host, f"{stamp}.analysis.txt"), analysis)
-            print(f"{host}/{stamp}: older than {GIVE_UP_DAYS} days, gave up", file=sys.stderr)
+        except OSError as exc:  # report stays pending; the other reports can still be saved
+            print(f"{host}/{stamp}: cannot write analysis: {exc}", file=sys.stderr)
+            status = 1
             continue
-        write_atomic(os.path.join(args.report_dir, host, f"{stamp}.analysis.txt"), analysis)
-        print(f"{host}/{stamp}: analyzed")
+        print(f"{host}/{stamp}: {done}", file=out)
     return status
 
 

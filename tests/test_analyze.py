@@ -912,6 +912,38 @@ class MainTest(FakeServerMixin, unittest.TestCase):
             "  Gave up after 3 days: reply does not match the schema. Read the report itself.\n",
         )
 
+    def test_write_failure_does_not_stop(self):
+        self.start_server(*[schema_invalid()] * 3, ok(), ok())
+        self.add_report("palvelin", "20261001-000000")  # gives up, but the write fails
+        self.add_report("palvelin", "20261002-000000")  # analyzed, but the write fails
+        self.add_report("vakoilu", "20261001-000000")
+        real = analyze.write_atomic
+
+        def write(path, content):
+            if f"{os.sep}palvelin{os.sep}" in path:
+                raise PermissionError("read-only")
+            real(path, content)
+
+        with mock.patch.object(analyze, "GIVE_UP_DAYS", 3), mock.patch.object(analyze, "write_atomic", write):
+            rc, out, err = self.run_main()
+        self.assertEqual(rc, 1)
+        self.assertEqual(out, "vakoilu/20261001-000000: analyzed\n")
+        for stamp in ("20261001-000000", "20261002-000000"):
+            self.assertIn(f"palvelin/{stamp}: cannot write analysis: read-only", err)
+        self.assertNotIn("gave up", err)
+        self.assertNotIn("stopping", err)
+        self.assertEqual(
+            self.all_files(),
+            sorted(
+                [
+                    "palvelin/20261001-000000.txt",
+                    "palvelin/20261002-000000.txt",
+                    "vakoilu/20261001-000000.analysis.txt",
+                    "vakoilu/20261001-000000.txt",
+                ]
+            ),
+        )
+
     def test_does_not_give_up_when_unreachable(self):
         self.add_report("palvelin", "20261001-000000")
         with mock.patch.object(analyze, "GIVE_UP_DAYS", 3):
