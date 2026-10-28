@@ -2,3 +2,7 @@ logfilter/
 __pycache__/
 .coverage
 coverage.xml
+
+# Local audit notes, not for the repository.
+audit.md
+report.md
