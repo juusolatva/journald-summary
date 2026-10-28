@@ -15,6 +15,7 @@ import os
 import re
 import secrets
 import sys
+import tempfile
 import time
 import urllib.parse
 import urllib.request
@@ -186,10 +187,19 @@ def load_known(path):
 
 
 def write_atomic(path, content):
-    tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        f.write(content)
-    os.replace(tmp, path)
+    """Write content to path via a uniquely named temporary file, flushed to disk before os.replace."""
+    directory = os.path.dirname(path)
+    os.makedirs(directory, mode=0o700, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=directory, prefix=os.path.basename(path) + ".", suffix=".tmp")
+    try:
+        with open(fd, "w", encoding="utf-8") as f:
+            f.write(content)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        os.unlink(tmp)
+        raise
 
 
 # --- Ollama ------------------------------------------------------------------

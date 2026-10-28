@@ -72,6 +72,8 @@ State is kept in plain files under `<state-dir>/<host>/`:
 - `cursor`: last processed journal cursor
 - `seen.json`: pattern keys already seen, each mapped to the time it was first seen
 
+A damaged `seen.json` is reported on stderr and treated as empty, so that run marks every pattern new and a normal run replaces the file.
+
 All state and report files are written atomically. State is saved only after the report has been written, so a failed run is repeated on the next run instead of being skipped.
 
 ## Report format

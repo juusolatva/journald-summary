@@ -8,6 +8,7 @@ import tempfile
 import types
 import unicodedata
 import unittest
+from collections import Counter
 from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -245,6 +246,35 @@ class HelpersTest(unittest.TestCase):
         self.assertEqual(clip("y" * limit, limit), "y" * limit)
         self.assertEqual(clip("y" * (limit + 1), limit), "y" * limit + " …")
         self.assertEqual(clip("\U000e0041" * 1_000_000, limit), ("\\U000e0041" * 52)[:limit] + " …")
+
+    def test_write_atomic(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "host", "cursor")
+            logfilter.write_atomic(path, "first")
+            logfilter.write_atomic(path, "second")
+            self.assertEqual(logfilter.read_file(path), "second")
+            with self.assertRaises(UnicodeEncodeError):
+                logfilter.write_atomic(path, "bad \ud800")
+            self.assertEqual(logfilter.read_file(path), "second")
+            self.assertEqual(os.listdir(os.path.dirname(path)), ["cursor"])
+
+    def test_render_report_new_keys_membership_is_not_linear(self):
+        class CountingList(list):
+            checks = 0
+
+            def __contains__(self, item):
+                CountingList.checks += 1
+                return super().__contains__(item)
+
+        patterns = {}
+        for i in range(50):
+            logfilter.add_entry(patterns, {}, "app", f"warning {chr(97 + i % 26)}{chr(97 + i // 26)}", 4, BASE_TS, [])
+        stats = {"patterns": patterns, "by_prio": Counter({4: 50}), "total": 50, "noise": 0}
+        stats.update(first_ts=BASE_TS, last_ts=BASE_TS)
+        new_keys = CountingList(patterns)
+        report = logfilter.render_report("palvelin", "normal", stats, {}, new_keys)
+        self.assertEqual(report.count("[NEW]"), 50)
+        self.assertEqual(CountingList.checks, 0)  # render_report builds a set instead of scanning the list
 
 
 class RulesTest(unittest.TestCase):
@@ -529,7 +559,7 @@ class NormalModeTest(E2EBase):
         self.assertEqual(len(seen), 2)
         for v in seen.values():
             self.assertIsNotNone(datetime.fromisoformat(v).tzinfo, v)
-        self.assertFalse(os.path.exists(self.state_path("cursor.tmp")))
+        self.assertEqual(sorted(os.listdir(os.path.join(self.state, "palvelin"))), ["cursor", "seen.json"])
 
     def test_second_run_continues_from_cursor(self):
         first = self.first_entries()
@@ -584,6 +614,26 @@ class NormalModeTest(E2EBase):
         self.assertIn("entries read: 0  (none)", res.stdout)
         self.assertIn("selected: 0 entries in 0 patterns (0 with rule matches, 0 new)", res.stdout)
         self.assertEqual(self.read_state("cursor"), cursor_before)
+
+    def test_damaged_seen_json_is_replaced(self):
+        for damaged in (b"{not json", b"[]", b"\xff\xfe"):
+            with self.subTest(damaged=damaged):
+                os.makedirs(os.path.dirname(self.state_path("seen.json")), exist_ok=True)
+                with open(self.state_path("seen.json"), "wb") as f:
+                    f.write(damaged)
+                self.set_entries(self.first_entries())
+                res = self.run_lf("palvelin", "--since=1 hour ago")
+                self.assertOk(res)
+                self.assertIn("warning: ignoring damaged ", res.stderr)
+                with open(self.state_path("seen.json"), "rb") as f:
+                    self.assertEqual(f.read(), damaged)  # preview mode leaves it alone
+
+                res = self.run_lf("palvelin")
+                self.assertOk(res)
+                self.assertIn("warning: ignoring damaged ", res.stderr)
+                self.assertIn("note: no saved patterns for this host yet", res.stdout)
+                self.assertEqual(len(json.loads(self.read_state("seen.json"))), 2)
+                os.unlink(self.state_path("cursor"))
 
     def test_zero_entries_first_run_writes_no_cursor(self):
         self.set_entries([])

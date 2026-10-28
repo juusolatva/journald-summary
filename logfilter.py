@@ -2,7 +2,8 @@
 """logfilter: condense journald logs per host into deduplicated patterns.
 
 Stage 1 of the log analysis pipeline: deterministic filtering only, no LLM.
-Prints one report per host to stdout.
+Prints one report per host to stdout, or with --report-dir writes one report
+file per host.
 """
 
 import argparse
@@ -14,6 +15,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import unicodedata
 from collections import Counter
 from datetime import datetime
@@ -253,12 +255,33 @@ def read_file(path):
         return None
 
 
+def load_seen(path):
+    """Read seen.json; a damaged file is reported and treated as empty, so the host keeps working."""
+    try:
+        seen = json.loads(read_file(path) or "{}")
+    except ValueError as exc:  # also UnicodeDecodeError
+        print(f"warning: ignoring damaged {path}: {exc}", file=sys.stderr)
+        return {}
+    if not isinstance(seen, dict):
+        print(f"warning: ignoring damaged {path}: not a JSON object", file=sys.stderr)
+        return {}
+    return seen
+
+
 def write_atomic(path, content):
-    os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
-    tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        f.write(content)
-    os.replace(tmp, path)
+    """Write content to path via a uniquely named temporary file, flushed to disk before os.replace."""
+    directory = os.path.dirname(path)
+    os.makedirs(directory, mode=0o700, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=directory, prefix=os.path.basename(path) + ".", suffix=".tmp")
+    try:
+        with open(fd, "w", encoding="utf-8") as f:
+            f.write(content)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        os.unlink(tmp)
+        raise
 
 
 # --- Main processing ---------------------------------------------------------
@@ -406,8 +429,9 @@ def render_report(host, mode, stats, seen, new_keys):
     if not seen:
         out.append("note: no saved patterns for this host yet, so every pattern is marked new")
     out.append("")
-    for k, p in sorted(patterns.items(), key=lambda item: sort_key(*item, new_keys)):
-        out.extend(pattern_lines(k, p, new_keys))
+    new = set(new_keys)  # checked once per pattern in each of two passes: a list would make this quadratic
+    for k, p in sorted(patterns.items(), key=lambda item: sort_key(*item, new)):
+        out.extend(pattern_lines(k, p, new))
     report = "\n".join(out)
     return f"{report}\nreport size: {len(report)} characters\n"
 
@@ -428,8 +452,7 @@ def process_host(host, since, state_dir, report_dir):
     preview = since is not None
 
     cmd, mode = journal_command(host, since, None if preview else read_file(cursor_path))
-    seen_raw = read_file(seen_path)
-    seen = json.loads(seen_raw) if seen_raw else {}
+    seen = load_seen(seen_path)
     stats = read_journal(cmd)
     new_keys = [k for k in stats["patterns"] if k not in seen]
 
