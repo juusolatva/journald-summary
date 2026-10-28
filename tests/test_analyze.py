@@ -282,8 +282,20 @@ class LogfilterContractTest(unittest.TestCase):
                     self.assertEqual([x.split(": ")[0] for x in rest[:2]], ["  pattern", "  example"])
                 self.assertIn("  top IPs: 192.0.2.10 x1, 2001:db8::5 x1 (2 distinct)", "\n".join(blocks))
                 self.assertEqual("\n".join([header, "", *blocks]) + "\n", report.rsplit("report size: ", 1)[0])
-                for chunk in analyze.make_chunks(header, blocks):
-                    self.assertEqual(analyze.split_report(chunk), (header, blocks))
+                self.assertEqual(analyze.make_chunks(header, blocks), ["\n\n".join([header, "\n".join(blocks)])])
+
+                # A limit that fits only the largest block alone: it gets its own chunk, smaller blocks share one.
+                limit = len(header) + len("\n\n") + len("\nchunk: 999/999") + max(map(len, blocks)) + 1
+                with mock.patch.object(analyze, "CHUNK_CHARS", limit):
+                    chunks = analyze.make_chunks(header, blocks)
+                self.assertTrue(1 < len(chunks) < len(blocks), len(chunks))
+                got = []
+                for i, chunk in enumerate(chunks, 1):
+                    self.assertLessEqual(len(chunk), limit)
+                    h, b = analyze.split_report(chunk)
+                    self.assertEqual(h, f"{header}\nchunk: {i}/{len(chunks)}")
+                    got.extend(b)
+                self.assertEqual(got, blocks)
 
 
 class WriteAtomicTest(unittest.TestCase):
