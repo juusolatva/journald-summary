@@ -3,6 +3,7 @@ __pycache__/
 .coverage
 coverage.xml
 
-# Local audit notes, not for the repository.
+# local notes
 audit.md
 report.md
+plan.md
