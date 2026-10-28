@@ -11,6 +11,7 @@ import threading
 import unittest
 import urllib.request
 from collections import Counter
+from datetime import datetime, timedelta
 from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -405,6 +406,17 @@ class PendingReportsTest(unittest.TestCase):
         self.assertEqual(got, ["vakoilu", "palvelin"])
 
 
+class TooOldTest(unittest.TestCase):
+    def test_too_old(self):
+        now = datetime.now()
+        self.assertFalse(analyze.too_old(now.strftime("%Y%m%d-%H%M%S")))
+        almost = now - timedelta(days=analyze.GIVE_UP_DAYS) + timedelta(minutes=1)
+        self.assertFalse(analyze.too_old(almost.strftime("%Y%m%d-%H%M%S")))
+        old = now - timedelta(days=analyze.GIVE_UP_DAYS, seconds=1)
+        self.assertTrue(analyze.too_old(old.strftime("%Y%m%d-%H%M%S")))
+        self.assertTrue(analyze.too_old("20261399-000000"))  # not a valid time
+
+
 class LoadKnownTest(unittest.TestCase):
     def test_comments_blank_whitespace(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -631,9 +643,10 @@ class MainTest(FakeServerMixin, unittest.TestCase):
         self.report_dir = os.path.join(self.tmp, "reports")
         os.mkdir(self.report_dir)
         self.known = os.path.join(self.tmp, "known-issues.txt")
-        p = mock.patch.object(analyze, "RETRY_DELAYS", [0, 0])
-        p.start()
-        self.addCleanup(p.stop)
+        for name, value in (("RETRY_DELAYS", [0, 0]), ("GIVE_UP_DAYS", 36500)):  # synthetic stamps are old
+            p = mock.patch.object(analyze, name, value)
+            p.start()
+            self.addCleanup(p.stop)
 
     def add_report(self, host, stamp, n_patterns=2, **kw):
         d = os.path.join(self.report_dir, host)
@@ -846,6 +859,66 @@ class MainTest(FakeServerMixin, unittest.TestCase):
         self.assertNotIn("stopping", err)
         self.assertFalse(os.path.exists(self.analysis_path("palvelin", "20261001-000000")))
         self.assertEqual(out, "palvelin/20261002-000000: analyzed\n")
+
+    def test_no_entries_read_is_an_issue(self):
+        self.start_server(ok())
+        d = os.path.join(self.report_dir, "seuranta")
+        os.mkdir(d)
+        with open(os.path.join(d, "20261001-000000.txt"), "w", encoding="utf-8") as f:
+            f.write(
+                "=== seuranta ===\nmode: normal (after saved cursor)\nrange: no entries\nentries read: 0  (none)\n"
+                "dropped as noise: 0\nselected: 0 entries in 0 patterns (0 with rule matches, 0 new)\n\n"
+                "report size: 141 characters\n"
+            )
+        rc, out, err = self.run_main()
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(self.requests, [])
+        self.assertEqual(out, "seuranta/20261001-000000: analyzed\n")
+        self.assertEqual(
+            self.read_analysis("seuranta", "20261001-000000"),
+            "=== seuranta 20261001-000000 ===\nmodel: -\nchunks: 0\n"
+            "summary: No journal entries were read for this host.\n\n"
+            "[high] No journal entries received\n"
+            "  The report read no journal entries at all. The host may be down or its logs may have stopped arriving.\n",
+        )
+
+    def test_unreadable_report_does_not_stop(self):
+        self.start_server(ok())
+        os.makedirs(os.path.join(self.report_dir, "palvelin", "20261001-000000.txt"))  # open() fails
+        self.add_report("palvelin", "20261002-000000")
+        rc, out, err = self.run_main()
+        self.assertEqual(rc, 1)
+        self.assertIn("palvelin/20261001-000000: cannot read report: ", err)
+        self.assertNotIn("stopping", err)
+        self.assertEqual(out, "palvelin/20261002-000000: analyzed\n")
+        self.assertFalse(os.path.exists(self.analysis_path("palvelin", "20261001-000000")))
+
+    def test_gives_up_on_old_failing_report(self):
+        recent = datetime.now().strftime("%Y%m%d-%H%M%S")
+        self.start_server(*[schema_invalid()] * 6)
+        self.add_report("palvelin", "20261001-000000")
+        self.add_report("palvelin", recent)
+        with mock.patch.object(analyze, "GIVE_UP_DAYS", 3):
+            rc, out, err = self.run_main()
+        self.assertEqual(rc, 1)
+        self.assertEqual(out, "")
+        self.assertIn("palvelin/20261001-000000: older than 3 days, gave up", err)
+        self.assertNotIn(f"palvelin/{recent}: older", err)
+        self.assertFalse(os.path.exists(self.analysis_path("palvelin", recent)))
+        self.assertEqual(
+            self.read_analysis("palvelin", "20261001-000000"),
+            "=== palvelin 20261001-000000 ===\nmodel: -\nchunks: 0\nsummary: Analysis failed.\n\n"
+            "[medium] Report could not be analyzed\n"
+            "  Gave up after 3 days: reply does not match the schema. Read the report itself.\n",
+        )
+
+    def test_does_not_give_up_when_unreachable(self):
+        self.add_report("palvelin", "20261001-000000")
+        with mock.patch.object(analyze, "GIVE_UP_DAYS", 3):
+            rc, _, err = self.run_main(url=closed_port_url())
+        self.assertEqual(rc, 1)
+        self.assertIn("stopping", err)
+        self.assertFalse(os.path.exists(self.analysis_path("palvelin", "20261001-000000")))
 
     def test_unreachable_server(self):
         self.add_report("palvelin", "20261001-000000")

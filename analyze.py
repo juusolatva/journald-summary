@@ -19,6 +19,7 @@ import tempfile
 import time
 import urllib.parse
 import urllib.request
+from datetime import datetime, timedelta
 
 # --- Configuration -----------------------------------------------------------
 
@@ -44,6 +45,11 @@ REQUEST_TIMEOUT = 900
 # Waits in seconds between attempts of one request. When all attempts fail, the
 # report is left for the next run.
 RETRY_DELAYS = [30, 120]
+
+# A report that cannot be read or gets no valid reply is retried on later runs
+# until it is this many days old (by its file name); then an analysis file that
+# says so is written, so it no longer holds up the run.
+GIVE_UP_DAYS = 3
 
 SYSTEM_PROMPT = """\
 You analyze condensed systemd journal reports from a few Linux servers. Find \
@@ -127,6 +133,9 @@ SCHEMA = {
 
 REPORT_NAME = re.compile(r"^(\d{8}-\d{6})\.txt$")
 
+# Header line of a report that read no journal entries at all.
+NO_ENTRIES = re.compile(r"^entries read: 0 ", re.MULTILINE)
+
 # --- Reports and chunks ------------------------------------------------------
 
 
@@ -176,6 +185,24 @@ def pending_reports(report_dir, hosts):
             m = REPORT_NAME.match(name)
             if m and not os.path.exists(os.path.join(host_dir, f"{m[1]}.analysis.txt")):
                 yield host, m[1], os.path.join(host_dir, name)
+
+
+def read_report(path):
+    """Report text. An unreadable file is a ValueError, so it is not mistaken for an unreachable server."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            return f.read()
+    except OSError as exc:
+        raise ValueError(f"cannot read report: {exc}") from exc
+
+
+def too_old(stamp):
+    """True if the report is GIVE_UP_DAYS or more old; a stamp that is not a valid time counts as old."""
+    try:
+        made = datetime.strptime(stamp, "%Y%m%d-%H%M%S")
+    except ValueError:
+        return True
+    return datetime.now() - made >= timedelta(days=GIVE_UP_DAYS)
 
 
 def load_known(path):
@@ -281,9 +308,19 @@ def render(host, stamp, model, n_chunks, result):
 
 
 def analyze_report(host, stamp, path, url, model, system):
-    with open(path, encoding="utf-8") as f:
-        header, blocks = split_report(f.read())
+    header, blocks = split_report(read_report(path))
     label = f"{host}/{stamp}"
+    if NO_ENTRIES.search(header):  # a quiet host still logs something; nothing at all means logs stopped arriving
+        silent = {
+            "severity": "high",
+            "known": False,
+            "title": "No journal entries received",
+            "details": "The report read no journal entries at all. The host may be down or its logs may have "
+            "stopped arriving.",
+        }
+        return render(
+            host, stamp, "-", 0, {"summary": "No journal entries were read for this host.", "issues": [silent]}
+        )
     if not blocks:
         result = {"summary": "No entries were selected in this report.", "issues": []}
         return render(host, stamp, "-", 0, result)
@@ -329,9 +366,20 @@ def main():
         except (OSError, http.client.HTTPException) as exc:  # server unreachable: stop, retry later
             print(f"{host}/{stamp}: {exc}; stopping, remaining reports are left for the next run", file=sys.stderr)
             return 1
-        except (ValueError, KeyError) as exc:  # bad reply for this report: try the others
+        except (ValueError, KeyError) as exc:  # unreadable report or bad reply: try the others
             print(f"{host}/{stamp}: {exc}", file=sys.stderr)
             status = 1
+            if not too_old(stamp):
+                continue
+            failed = {
+                "severity": "medium",
+                "known": False,
+                "title": "Report could not be analyzed",
+                "details": f"Gave up after {GIVE_UP_DAYS} days: {exc}. Read the report itself.",
+            }
+            analysis = render(host, stamp, "-", 0, {"summary": "Analysis failed.", "issues": [failed]})
+            write_atomic(os.path.join(args.report_dir, host, f"{stamp}.analysis.txt"), analysis)
+            print(f"{host}/{stamp}: older than {GIVE_UP_DAYS} days, gave up", file=sys.stderr)
             continue
         write_atomic(os.path.join(args.report_dir, host, f"{stamp}.analysis.txt"), analysis)
         print(f"{host}/{stamp}: analyzed")

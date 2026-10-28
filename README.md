@@ -147,11 +147,11 @@ sudo ./analyze.py [HOST ...] [--report-dir PATH] [--url URL] [--model MODEL] [--
 
 How it works:
 
-- Reports are processed oldest first. A report with no selected patterns gets its analysis file without calling the model.
+- Reports are processed oldest first. A report with no selected patterns gets its analysis file without calling the model. If the report read no journal entries at all (`entries read: 0`), that analysis has a high-severity "No journal entries received" issue, because the host may be down or its logs may have stopped arriving.
 - A report that fits in `CHUNK_CHARS` is sent in one request. A larger one is split between pattern blocks, each chunk repeating the report header, and a final request merges the chunk results into one analysis.
 - Requests go to `/api/chat` with a JSON schema as `format`, temperature 0 and `num_ctx` set to `NUM_CTX`. A reply is accepted only if it matches the schema, generation was not cut short and the context window was not full.
 - Report text is log text that any program or user on a host can write, so each request puts it between `<data-ID>` and `</data-ID>` lines with a new random ID, and the prompts tell the model that this text is data, never instructions. This makes injected instructions in log lines less likely to steer the analysis, but cannot rule it out.
-- Each request is tried up to three times (`RETRY_DELAYS`). If Ollama cannot be reached, the run stops and leaves the remaining reports for the next run. If the replies for one report stay invalid, that report is skipped and the others continue. In both cases the exit status is 1.
+- Each request is tried up to three times (`RETRY_DELAYS`). If Ollama cannot be reached, the run stops and leaves the remaining reports for the next run. If a report cannot be read or its replies stay invalid, that report is skipped and the others continue; once it is `GIVE_UP_DAYS` (3) days old by its file name, it gets an analysis file with a "Report could not be analyzed" issue instead and is no longer retried. In all these cases the exit status is 1.
 - The known issues file has one issue per line (empty lines and lines starting with `#` are ignored), for example `palvelin: ata1 SATA link errors (SSD port, cable being checked)`. The model marks matching issues as known instead of leaving them out. A missing file means no known issues.
 
 Example analysis (synthetic data):
@@ -182,6 +182,7 @@ Settings at the top of `analyze.py`:
 | `KNOWN_ISSUES` | Default for `--known-issues` |
 | `REQUEST_TIMEOUT` | Seconds to wait for one reply |
 | `RETRY_DELAYS` | Waits between attempts of one request |
+| `GIVE_UP_DAYS` | Age in days after which a report that keeps failing is no longer retried |
 | `SYSTEM_PROMPT`, `MERGE_PROMPT`, `SCHEMA` | Prompts and the reply schema |
 
 ## Installation (daily systemd timer)
