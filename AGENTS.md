@@ -6,7 +6,7 @@
 
 The goal is to spot software and hardware problems (failed units, crashes, disk, memory, filesystem, thermal and power issues, misconfiguration). Security monitoring (intrusion detection, auditing, login attempts, scanning) is out of scope; dedicated tools such as auditd cover it. Do not add rules, patterns or report fields aimed at security.
 
-Stage 2, `analyze.py`, reads the report files and sends them, in chunks when needed, to a local LLM (Ollama native HTTP API, `http://localhost:11434` by default), retrying until analysis succeeds. It writes `<report-dir>/<host>/<YYYYmmdd-HHMMSS>.analysis.txt` next to each report; a report counts as analyzed when that file exists. It runs via `systemd/analyze.service`, which `logfilter.service` pulls in. All LLM and HTTP code belongs in `analyze.py`; `logfilter.py` never calls an LLM or the network.
+Stage 2, `analyze.py`, reads the report files and sends them, in chunks when needed, to a local LLM (Ollama native HTTP API, `http://localhost:11434` by default), retrying until analysis succeeds or the report is `GIVE_UP_DAYS` old. It writes `<report-dir>/<host>/<YYYYmmdd-HHMMSS>.analysis.txt` next to each report; a report counts as analyzed when that file exists. It runs via `systemd/analyze.service`, which `logfilter.service` pulls in. All LLM and HTTP code belongs in `analyze.py`; `logfilter.py` never calls an LLM or the network.
 
 ## CLI
 
