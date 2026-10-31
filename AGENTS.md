@@ -1,5 +1,7 @@
 # AGENTS.md
 
+This file is the authoritative contributor and agent guidance. `CLAUDE.md` includes it. Keep durable project conventions here and user-facing usage and setup instructions in [README.md](README.md).
+
 ## Project
 
 `logfilter.py` is stage 1 of a small log analysis pipeline for a handful of Linux servers. It reads systemd journal entries per host, filters and deduplicates them deterministically, and produces a condensed report per host (stdout, or one file per host per run with `--report-dir`). It does not call any LLM. It runs daily via `systemd/logfilter.service` and `systemd/logfilter.timer`.
@@ -7,6 +9,14 @@
 The goal is to spot software and hardware problems (failed units, crashes, disk, memory, filesystem, thermal and power issues, misconfiguration). Security monitoring (intrusion detection, auditing, login attempts, scanning) is out of scope; dedicated tools such as auditd cover it. Do not add rules, patterns or report fields aimed at security.
 
 Stage 2, `analyze.py`, reads the report files and sends them, in chunks when needed, to a local LLM (Ollama native HTTP API, `http://localhost:11434` by default), retrying until analysis succeeds or the report is `GIVE_UP_DAYS` old. It writes `<report-dir>/<host>/<YYYYmmdd-HHMMSS>.analysis.txt` next to each report; a report counts as analyzed when that file exists. It runs via `systemd/analyze.service`, which `logfilter.service` pulls in. All LLM and HTTP code belongs in `analyze.py`; `logfilter.py` never calls an LLM or the network.
+
+## Repository map
+
+- `logfilter.py`: configuration, normalization, journal entry helpers, state files, and main processing. `process_host()` coordinates journal reading, report output, and state saving.
+- `analyze.py`: configuration and prompts, report parsing and chunking, Ollama requests and retries, and main processing.
+- `systemd/`: daily logfilter timer and the two services.
+- `tests/test_logfilter.py`, `tests/test_analyze.py`: synthetic unit and integration tests, also collected by pytest through `pytest.ini`.
+- `pyproject.toml`: Ruff and coverage settings. `requirements-dev.txt` and `requirements-dev.lock`: development tools and their hashed lock. `.github/` and `sonar-project.properties`: CI and dependency updates.
 
 ## CLI
 
@@ -38,6 +48,7 @@ Stage 2, `analyze.py`, reads the report files and sends them, in chunks when nee
 
 - Python 3.13 or newer, standard library only, for `logfilter.py`, `analyze.py` and the tests (`requirements.txt` lists no runtime dependencies). No third-party packages, no `python-systemd`, no other languages. The only exception is development and CI tooling (`pytest`, `pytest-cov`, `ruff`) in `requirements-dev.txt`, pinned with hashes in `requirements-dev.lock`; never import it from the scripts or tests.
 - Read the journal only through `journalctl --output=json` via `subprocess`. Never parse `journalctl` text output: it is locale-dependent (palvelin prints Finnish month names such as `loka` and `syys`).
+- Keep `--all` in the journalctl command; without it, fields larger than 4096 bytes can be returned as null.
 - No databases. State is plain files in `<state-dir>/<host>/` (default `/var/lib/logfilter/<host>/`):
   - `cursor`: last processed journal cursor string.
   - `seen.json`: pattern keys already seen, mapped to first-seen ISO timestamp string.
@@ -49,6 +60,16 @@ Stage 2, `analyze.py`, reads the report files and sends them, in chunks when nee
   3. Priority selection: entry is selected if `PRIORITY <= MAX_PRIORITY` or if it matches `ALWAYS_INCLUDE`.
 - Keep all configuration settings (`REMOTE_DIR`, `DEFAULT_STATE_DIR`, `INITIAL_SINCE`, `MAX_PRIORITY`) and tunable lists (`HOSTS`, `RULES`, `ALWAYS_INCLUDE`, `NOISE`, `EXTRA_NORMALIZERS`) in the configuration section at the top of the file.
 - Keep `logfilter.py` and `analyze.py` single scripts (plus the systemd units in `systemd/`) unless asked otherwise. `analyze.py` also uses the standard library only (`urllib.request` for HTTP), keeps its settings and prompts in its configuration section, and writes analysis files atomically.
+
+## Code conventions and invariants
+
+- Match the scripts' existing style: plain functions, no classes or type hints, short docstrings where behavior is non-obvious, and sparse inline comments. Keep code in the matching section under the existing section banners.
+- Journal text fields go through `text()` so binary fields and repeated fields are handled consistently.
+- `RULES` entries are `(name, identifier_or_None, regex)`; `ALWAYS_INCLUDE` and `NOISE` entries are `(identifier_or_None, regex)`. Their regex must stay last because `compile_list()` consumes it positionally. `EXTRA_NORMALIZERS` entries are `(regex, replacement)`. Identifiers match `SYSLOG_IDENTIFIER` (fallback `_COMM`); regexes use `re.search` on `MESSAGE`.
+- Preserve normalization order: extra normalizers, IPv4, IPv6, MAC, timestamps, UUID, hex, numbers. IP candidates are validated with `ipaddress`; IPs must precede MAC and time matching to preserve IPv6, and MACs must precede times.
+- Pattern keys are the first 16 hex characters of SHA-1 of `source + "\0" + template`. Changes to normalization, source selection or this formula can mark existing patterns new again.
+- Sources prefer kernel transport, then `_SYSTEMD_UNIT` or `_SYSTEMD_USER_UNIT` unless it is `init.scope`, then the identifier. Source digits become `<N>`. A pattern keeps the most severe priority among its entries; an unparseable entry priority defaults to info (6).
+- Keep processing helpers small enough to stay within SonarQube's cognitive-complexity limit of 15.
 
 ## Report format
 
@@ -72,7 +93,18 @@ Structure per host:
 4. Footer:
    - `report size: <char_count> characters`
 
+The size counts the report text before the newline introducing the footer; it excludes the footer itself.
+
 Journal-derived text (`<source>`, `<normalized_template>`, `<sample_message>`) must never break a report line: `split_report` in `analyze.py` reads the file with universal newlines. `one_line()` and `clip()` in `logfilter.py` handle this: newlines in messages become ` | `, every Cc/Cf/Zl/Zp character except tab is written as a visible escape (`printable()`), template and example are cut at 400 characters and the source at `SOURCE_LIMIT` (512), with ` …` marking a cut. Only a bounded prefix is escaped, so large fields cost no extra memory; keep it that way. Render any new journal-derived report field through these helpers.
+
+## Analysis invariants
+
+- Only `<YYYYmmdd-HHMMSS>.txt` files matching `REPORT_NAME` are inputs; `.analysis.txt` files must never match. Reports are processed oldest first within each host.
+- `split_report()` takes the header before the first blank line, groups each pattern heading with its following two-space-indented lines, and drops the `report size:` footer. `make_chunks()` keeps pattern blocks whole and repeats the header; multiple chunks require a final merge request.
+- Reports with no selected patterns are analyzed without Ollama (`model: -`, `chunks: 0`). A report with `entries read: 0` must produce the high-severity "No journal entries received" issue rather than "no issues".
+- `chat()` uses `/api/chat`, `stream: false`, `format: SCHEMA`, temperature 0 and `num_ctx: NUM_CTX`. Reject invalid schema, an explicit `done_reason` other than `stop`, or prompt plus generated token counts reaching `NUM_CTX`.
+- `wrap_data()` encloses every user message, including merge input, in `<data-ID>` and `</data-ID>` lines. Generate a fresh random ID absent from the text for each request; keep this marker format and both prompts in sync.
+- Each chunk request and merge request gets `1 + len(RETRY_DELAYS)` attempts. After retries, `OSError` or `http.client.HTTPException` stops the run (including HTTP errors); `ValueError` or `KeyError` skips only the affected report, writing a failure analysis once it reaches `GIVE_UP_DAYS`. An unreachable server must never cause a report to be marked analyzed or given up on.
 
 ## Scope and changes
 
@@ -96,6 +128,8 @@ python3 -m unittest discover -s tests -v
 CI (`.github/workflows/ci.yml`) also runs `ruff check` and `ruff format --check` with the ruff version pinned in `requirements-dev.txt`, runs the tests with `pytest --cov` on Python 3.13 and 3.14 (tools installed from `requirements-dev.lock`, after checking that the lock satisfies `requirements-dev.txt`), and sends coverage to SonarQube Cloud (`sonar-project.properties`). `.github/workflows/osv-scanner.yml` scans `requirements-dev.lock` with OSV-Scanner on pushes, PRs and a weekly schedule. Actions are pinned to full commit SHAs with a version comment. Dependabot (`.github/dependabot.yml`) opens weekly update PRs, one for the actions and one for `requirements-dev.txt`; it cannot update `requirements-dev.lock`, so regenerate the lock on its pip PRs before merging (the test jobs fail until then). Code follows `ruff format` layout (line length 120, settings in `pyproject.toml`): run `ruff format` and `ruff check` before committing. After changing `requirements-dev.txt`, regenerate the lock with `uv pip compile --universal --generate-hashes --no-header --python-version 3.13 --upgrade --exclude-newer "7 days" requirements-dev.txt -o requirements-dev.lock` (`--upgrade` also updates the indirect dependencies, which Dependabot does not see; `--exclude-newer "7 days"` matches the Dependabot cooldown). SonarQube taint findings on CLI arguments (path traversal, SSRF, command argument injection) are accepted as false positives; do not "fix" them by restricting legitimate paths or URLs.
 
 The guidance below describes what the tests do and how to test by hand.
+
+`RulesTest.test_every_rule_has_a_sample` and `NoiseTest.test_every_noise_entry_has_a_sample` require a synthetic sample for every rule and noise entry. Add samples when changing those lists. The analysis tests use `FakeServerMixin` for scripted HTTP replies and patch retry delays to avoid production waits.
 
 Test with a fake `journalctl`: an executable script named `journalctl` in a temporary directory that prints JSON lines (one journal entry per line, with fields such as `__CURSOR`, `__REALTIME_TIMESTAMP`, `PRIORITY`, `MESSAGE`, `SYSLOG_IDENTIFIER`, `_SYSTEMD_UNIT`, `_TRANSPORT`, `_HOSTNAME`). Put that directory first in `PATH` and always pass a temporary `--state-dir` (the default is `/var/lib/logfilter`) and, when used, a temporary `--report-dir`.
 
@@ -125,6 +159,8 @@ python3 -m py_compile logfilter.py analyze.py
 Logs are sensitive. Never use real log content in tests, examples, or commit messages. Use synthetic data with documentation address ranges only:
 - IPv4: `192.0.2.0/24`, `198.51.100.0/24`, `203.0.113.0/24`
 - IPv6: `2001:db8::/32`
+
+The gitignored `logfilter/` directory may contain local copies of production state, reports and analyses. Treat them as sensitive: never commit, publish or copy their content into documentation or test fixtures.
 
 ## Known issues (deferred)
 

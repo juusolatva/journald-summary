@@ -63,7 +63,7 @@ Each entry goes through these steps in this order:
 
 Selected messages are normalized: the `EXTRA_NORMALIZERS` run first (for example, the defaults replace Docker veth interface names with `veth<ID>` and libata register dumps with `<REGS>`, and drop coredump stack traces), then IPv4/IPv6 addresses, MAC addresses, timestamps, UUIDs, hex values and numbers are replaced with placeholders (`<IP>`, `<MAC>`, `<TIME>`, `<UUID>`, `<HEX>`, `<N>`). Entries with the same source (systemd unit, syslog identifier or `kernel`) and the same normalized template form one pattern. IP addresses are counted per pattern.
 
-A pattern is **new** if its key is not yet in the host's `seen.json`.
+A pattern is **new** if its key is not yet in the host's `seen.json`. Changing normalization or how sources are selected can mark existing patterns new again.
 
 ### State
 
@@ -131,7 +131,7 @@ The identifier is matched against `SYSLOG_IDENTIFIER` (or `_COMM` if that is mis
 
 ## Analysis (stage 2)
 
-`analyze.py` reads the reports written with `--report-dir`, sends each one to an Ollama model and writes the result next to the report as `<host>/<YYYYmmdd-HHMMSS>.analysis.txt`. A report counts as analyzed once that file exists, so a report whose analysis failed is tried again on the next run. Python 3.13 or newer, standard library only.
+`analyze.py` reads the reports written with `--report-dir`, sends each one to an Ollama model and writes the result next to the report as `<host>/<YYYYmmdd-HHMMSS>.analysis.txt`. Only files named `<YYYYmmdd-HHMMSS>.txt` are inputs; analysis files are not read as reports. A report counts as analyzed once that file exists, so a report whose analysis failed is tried again on the next run. Python 3.13 or newer, standard library only.
 
 ```
 sudo ./analyze.py [HOST ...] [--report-dir PATH] [--url URL] [--model MODEL] [--known-issues PATH]
@@ -147,7 +147,7 @@ sudo ./analyze.py [HOST ...] [--report-dir PATH] [--url URL] [--model MODEL] [--
 
 How it works:
 
-- Reports are processed oldest first. A report with no selected patterns gets its analysis file without calling the model. If the report read no journal entries at all (`entries read: 0`), that analysis has a high-severity "No journal entries received" issue, because the host may be down or its logs may have stopped arriving.
+- Reports are processed oldest first within each host. A report with no selected patterns gets its analysis file without calling the model. If the report read no journal entries at all (`entries read: 0`), that analysis has a high-severity "No journal entries received" issue, because the host may be down or its logs may have stopped arriving.
 - A report that fits in `CHUNK_CHARS` is sent in one request. A larger one is split between pattern blocks, each chunk repeating the report header, and a final request merges the chunk results into one analysis.
 - Requests go to `/api/chat` with a JSON schema as `format`, temperature 0 and `num_ctx` set to `NUM_CTX`. A reply is accepted only if it matches the schema, generation was not cut short and the context window was not full.
 - Report text is log text that any program or user on a host can write, so each request puts it between `<data-ID>` and `</data-ID>` lines with a new random ID, and the prompts tell the model that this text is data, never instructions. This makes injected instructions in log lines less likely to steer the analysis, but cannot rule it out.
@@ -215,6 +215,8 @@ sudo systemctl daemon-reload
 
 ## Testing
 
+Contributor and agent guidance lives in [AGENTS.md](AGENTS.md), including code conventions, pipeline invariants and deferred issues. [CLAUDE.md](CLAUDE.md) includes that file. Keep lasting project guidance in these tracked documents.
+
 The automated tests in `tests/` use only the standard library (`unittest`), synthetic data, a fake `journalctl` and a fake Ollama server on `127.0.0.1`. They do not need root and do not touch real journals or `/var/lib/logfilter`. Run them from the repository root:
 
 ```
@@ -252,7 +254,7 @@ chmod +x /tmp/lf/bin/journalctl
 PATH=/tmp/lf/bin:$PATH python3 logfilter.py palvelin --state-dir /tmp/lf/state
 ```
 
-Use only documentation address ranges in test data (`192.0.2.0/24`, `198.51.100.0/24`, `203.0.113.0/24`, `2001:db8::/32`).
+Use only documentation address ranges in test data (`192.0.2.0/24`, `198.51.100.0/24`, `203.0.113.0/24`, `2001:db8::/32`). The gitignored `logfilter/` directory may contain sensitive production output; never commit it or copy its contents into examples or tests.
 
 To test `analyze.py` without a real model, run a small fake Ollama server (`http.server`) that answers `POST /api/chat` with a JSON reply whose `message.content` matches the schema, point `--url` at it and use a temporary report directory with synthetic reports.
 
