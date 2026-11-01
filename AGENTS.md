@@ -16,6 +16,7 @@ Stage 2, `analyze.py`, reads the report files and sends them, in chunks when nee
 - `analyze.py`: configuration and prompts, report parsing and chunking, Ollama requests and retries, and main processing.
 - `systemd/`: daily logfilter timer and the two services.
 - `tests/test_logfilter.py`, `tests/test_analyze.py`: synthetic unit and integration tests, also collected by pytest through `pytest.ini`.
+- `GLOSSARY.md`: domain vocabulary and terminology for journal evidence, selection, reports, and analysis.
 - `pyproject.toml`: Ruff and coverage settings. `requirements-dev.txt` and `requirements-dev.lock`: development tools and their hashed lock. `.github/` and `sonar-project.properties`: CI and dependency updates.
 
 ## CLI
