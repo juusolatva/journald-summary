@@ -46,8 +46,6 @@ If a host fails (for example, `journalctl` exits with an error), the script prin
 
 ## How it works
 
-See [GLOSSARY.md](GLOSSARY.md) for definitions of domain terms used throughout the pipeline (rules, noise, patterns, chunks, and issue severities).
-
 ### Modes
 
 - **Normal mode** (no `--since`): reads entries after the cursor saved for the host. On the first run there is no cursor, so it reads `INITIAL_SINCE` (24 hours ago). After the report is produced, it saves the new cursor and the patterns it has seen.
