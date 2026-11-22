@@ -49,10 +49,11 @@ Stage 2, `analyze.py`, reads the report files and sends them, in chunks when nee
 - Python 3.13 or newer, standard library only, for `logfilter.py`, `analyze.py` and the tests (`requirements.txt` lists no runtime dependencies). No third-party packages, no `python-systemd`, no other languages. The only exception is development and CI tooling (`pytest`, `pytest-cov`, `ruff`) in `requirements-dev.txt`, pinned with hashes in `requirements-dev.lock`; never import it from the scripts or tests.
 - Read the journal only through `journalctl --output=json` via `subprocess`. Never parse `journalctl` text output: it is locale-dependent (palvelin prints Finnish month names such as `loka` and `syys`).
 - Keep `--all` in the journalctl command; without it, fields larger than 4096 bytes can be returned as null.
+- The command requests only `JOURNAL_FIELDS` with `--output-fields` (JSON output always adds `__CURSOR` and `__REALTIME_TIMESTAMP`), so large unused fields are never read. Add a field there when the code starts reading it; `ReadJournalTest` checks every `entry.get()` field against the list.
 - No databases. State is plain files in `<state-dir>/<host>/` (default `/var/lib/logfilter/<host>/`):
   - `cursor`: last processed journal cursor string.
   - `seen.json`: pattern keys already seen, mapped to first-seen ISO timestamp string.
-- State and report files are written atomically (temporary file + `os.replace`). State is written only after the report has been produced (with `--report-dir`: after the report file is in place), so a failed run is repeated instead of skipped.
+- State and report files are written atomically (temporary file + `os.replace`). State is written only after the report has been produced (with `--report-dir`: after the report file is in place), so a failed run is repeated instead of skipped. A report file is never replaced (`write_atomic(..., overwrite=False)` links it into place): if `<stamp>.txt` exists, that host fails before saving state.
 - `--since` (preview mode) must never read the cursor or write any state or report files. It may read `seen.json` to mark new patterns.
 - Filtering order must be strictly preserved:
   1. `RULES`: match always selects entry, bypassing `NOISE` and priority limits.
@@ -63,12 +64,12 @@ Stage 2, `analyze.py`, reads the report files and sends them, in chunks when nee
 
 ## Code conventions and invariants
 
-- Match the scripts' existing style: plain functions, no classes or type hints, short docstrings where behavior is non-obvious, and sparse inline comments. Keep code in the matching section under the existing section banners.
+- Match the scripts' existing style: plain functions, no classes (other than a small exception subclass such as `ContextFullError`) or type hints, short docstrings where behavior is non-obvious, and sparse inline comments. Keep code in the matching section under the existing section banners.
 - Journal text fields go through `text()` so binary fields and repeated fields are handled consistently.
 - `RULES` entries are `(name, identifier_or_None, regex)`; `ALWAYS_INCLUDE` and `NOISE` entries are `(identifier_or_None, regex)`. Their regex must stay last because `compile_list()` consumes it positionally. `EXTRA_NORMALIZERS` entries are `(regex, replacement)`. Identifiers match `SYSLOG_IDENTIFIER` (fallback `_COMM`); regexes use `re.search` on `MESSAGE`.
 - Preserve normalization order: extra normalizers, IPv4, IPv6, MAC, timestamps, UUID, hex, numbers. IP candidates are validated with `ipaddress`; IPs must precede MAC and time matching to preserve IPv6, and MACs must precede times.
 - Pattern keys are the first 16 hex characters of SHA-1 of `source + "\0" + template`. Changes to normalization, source selection or this formula can mark existing patterns new again.
-- Sources prefer kernel transport, then `_SYSTEMD_UNIT` or `_SYSTEMD_USER_UNIT` unless it is `init.scope`, then the identifier. Source digits become `<N>`. A pattern keeps the most severe priority among its entries; an unparseable entry priority defaults to info (6).
+- Sources prefer kernel transport, then `_SYSTEMD_USER_UNIT`, then `_SYSTEMD_UNIT` (each skipped if it is `init.scope`; a user service also carries `_SYSTEMD_UNIT=user@<UID>.service`), then the identifier. Source digits become `<N>`. A pattern keeps the most severe priority among its entries; an unparseable or out-of-range (not 0-7) entry priority defaults to info (6).
 - Keep processing helpers small enough to stay within SonarQube's cognitive-complexity limit of 15.
 
 ## Report format
@@ -99,12 +100,13 @@ Journal-derived text (`<source>`, `<normalized_template>`, `<sample_message>`) m
 
 ## Analysis invariants
 
-- Only `<YYYYmmdd-HHMMSS>.txt` files matching `REPORT_NAME` are inputs; `.analysis.txt` files must never match. Reports are processed oldest first within each host.
-- `split_report()` takes the header before the first blank line, groups each pattern heading with its following two-space-indented lines, and drops the `report size:` footer. `make_chunks()` keeps pattern blocks whole and repeats the header; multiple chunks require a final merge request.
-- Reports with no selected patterns are analyzed without Ollama (`model: -`, `chunks: 0`). A report with `entries read: 0` must produce the high-severity "No journal entries received" issue rather than "no issues".
-- `chat()` uses `/api/chat`, `stream: false`, `format: SCHEMA`, temperature 0 and `num_ctx: NUM_CTX`. Reject invalid schema, an explicit `done_reason` other than `stop`, or prompt plus generated token counts reaching `NUM_CTX`.
+- Only `<YYYYmmdd-HHMMSS>.txt` files matching `REPORT_NAME` are inputs; `.analysis.txt` files must never match. Reports are processed oldest first within each host. A missing default report directory means nothing to analyze (exit status 0); any other error reading it (not a directory, no permission) exits with status 2.
+- `split_report()` takes the header before the first blank line, groups each pattern heading with its following two-space-indented lines, and drops the `report size:` footer. `make_chunks()` keeps pattern blocks whole and repeats the header. Multiple chunks are combined by `merge()`: each merge request takes at least two chunk analyses and as many as fit `CHUNK_CHARS` (packed by `pack()`), in rounds until one analysis is left; a single leftover analysis is carried to the next round unchanged.
+- A report whose header lacks `=== ` or `entries read:` (empty or damaged file) is a `ValueError`, never "no issues". Reports with no selected patterns are analyzed without Ollama (`model: -`, `chunks: 0`). A report with `entries read: 0` must produce the high-severity "No journal entries received" issue rather than "no issues".
+- `chat()` uses `/api/chat`, `stream: false`, `format: SCHEMA`, temperature 0 and `num_ctx: NUM_CTX`, through `OPENER`, which ignores proxy environment variables; an HTTP error's message includes the start of its body (`ERROR_BODY_LIMIT`). `reply_content()` and `validate()` reject (as `ValueError`) a reply that is not a finished (`done`) object, an explicit `done_reason` other than `stop`, non-integer token counts, prompt plus generated token counts reaching `NUM_CTX` (`ContextFullError`), a missing or non-string `message.content`, an invalid schema, or strings that cannot be encoded as UTF-8.
+- `render()` writes every model-supplied field (summary, title, details) through its `one_line()`: newlines become ` | ` and Cc/Cf/Zl/Zp characters except tab are escaped, so only `render()` starts analysis lines.
 - `wrap_data()` encloses every user message, including merge input, in `<data-ID>` and `</data-ID>` lines. Generate a fresh random ID absent from the text for each request; keep this marker format and both prompts in sync.
-- Each chunk request and merge request gets `1 + len(RETRY_DELAYS)` attempts. After retries, `OSError` or `http.client.HTTPException` stops the run (including HTTP errors); `ValueError` or `KeyError` skips only the affected report, writing a failure analysis once it reaches `GIVE_UP_DAYS`. An unreachable server must never cause a report to be marked analyzed or given up on.
+- Each chunk request and merge request gets `1 + len(RETRY_DELAYS)` attempts, except that `ContextFullError` is raised at once (the same input fails the same way). After retries, `OSError` or `http.client.HTTPException` stops the run (including HTTP errors); `ValueError` or `KeyError` skips only the affected report, writing a failure analysis once it reaches `GIVE_UP_DAYS`. An unreachable server must never cause a report to be marked analyzed or given up on.
 
 ## Scope and changes
 
@@ -170,6 +172,22 @@ Observed in production output. Not yet decided; do not fix unless asked. Fixes f
 2. `dropped as noise` also counts entries above `MAX_PRIORITY` that priority selection would have dropped anyway, so on hosts with noisy info-level logs (for example container logs) it overstates how much noise suppressed.
 3. The same message logged by one process under different units (for example sshd messages under both `sshd.service` and `session-<N>.scope`) becomes separate patterns, because `source` is part of the pattern key.
 4. A host where nothing has ever been selected keeps an empty `seen.json`, so the "no saved patterns" note repeats on every run.
+
+## Deferred review findings
+
+From the security audit and repository review of revision `bb16286` (2026-11-20); the rest of their findings are fixed. Not yet decided; do not fix unless asked.
+
+1. `analyze.py` does not authenticate the Ollama listener: if Ollama is down and another local process takes `localhost:11434`, it receives report chunks and known issues and can return analyses that are saved as complete. Ollama has no TLS or authentication of its own, so a fix needs a TLS reverse proxy with certificate checks. Accepted for now: it needs local access to palvelin while Ollama is not running.
+2. `seen.json` has no size limit or expiry, and every normal run rewrites it even with no new patterns. A bound would need eviction (an evicted pattern becomes new again); skipping unchanged writes must keep first-run initialization and report-before-state ordering.
+3. One report that takes longer than `TimeoutStartSec=6h` is killed and redone from its first chunk after every restart, holding up later reports, other hosts included. `GIVE_UP_DAYS` cannot help because the process is killed, not failing. A fix needs per-chunk checkpoints keyed to report content and analysis settings, or bounded batches per run.
+4. `too_old()` uses only the report's file name time, so after an Ollama outage of `GIVE_UP_DAYS` or more, a report that fails once (three attempts within about 2.5 minutes) is given up on at the first run after the server returns. A fix needs failure tracking (first failure time or attempt count), which is new state.
+5. A damaged `cursor` file (not UTF-8, or a cursor `journalctl` rejects) makes that host fail on every run until it is removed by hand.
+6. Report file names use naive local time, so names in the DST fall-back hour (Europe/Helsinki) are ambiguous: `pending_reports()` order and `too_old()` can be off by an hour.
+7. `logfilter.service` pulls in `analyze.service` with `Wants=`. If `analyze.service` is already running (a 30-minute retry), no second run is queued, so reports written after it listed the directory wait for its next restart or the next day.
+8. IPv4-mapped IPv6 addresses (`::ffff:192.0.2.1`) normalize to `::ffff:<IP>`, because IPv4 is replaced first; the IPv4 part is still counted in top IPs.
+9. `analyze.py` follows HTTP redirects, and `chat()` appends `/api/chat` to the raw `--url`, so a URL with a query string or fragment is mangled.
+10. The `invalid user` normalizer in `EXTRA_NORMALIZERS` uses `\S*` (it also matches an empty name) and is security-flavored; removing it would split sshd noise into many patterns and change their keys.
+11. The SonarQube CI job runs on every pull request without a guard for forks, where `SONAR_TOKEN` is missing. Only matters if outside contributions start.
 
 ## Communication
 

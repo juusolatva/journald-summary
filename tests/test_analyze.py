@@ -174,8 +174,7 @@ _patches = []
 
 
 def setUpModule():
-    # no proxies from the environment for 127.0.0.1, and no 900 s hang if the fake server stalls
-    urllib.request.install_opener(urllib.request.build_opener(urllib.request.ProxyHandler({})))
+    # no 900 s hang if the fake server stalls
     _patches.append(mock.patch.object(analyze, "REQUEST_TIMEOUT", 10))
     for p in _patches:
         p.start()
@@ -184,7 +183,6 @@ def setUpModule():
 def tearDownModule():
     for p in _patches:
         p.stop()
-    urllib.request.install_opener(None)
 
 
 def closed_port_url():
@@ -367,6 +365,37 @@ class MakeChunksTest(unittest.TestCase):
         self.assertLessEqual(max(sizes), 0)
 
 
+class PackTest(unittest.TestCase):
+    def test_min_items_and_limit(self):
+        with mock.patch.object(analyze, "CHUNK_CHARS", 10):
+            self.assertEqual(analyze.pack(["aaa", "bbb", "ccc"], 0), [["aaa", "bbb"], ["ccc"]])
+            self.assertEqual(analyze.pack(["a" * 20, "b", "c"], 0), [["a" * 20], ["b", "c"]])
+            self.assertEqual(analyze.pack(["a" * 20, "b" * 20, "c"], 0, min_items=2), [["a" * 20, "b" * 20], ["c"]])
+            self.assertEqual(analyze.pack([[1, 2], [3]], 5, size=len, min_items=2), [[[1, 2], [3]]])
+            self.assertEqual(analyze.pack([], 0), [])
+
+
+class MergeTest(FakeServerMixin, unittest.TestCase):
+    def test_merges_in_rounds_when_analyses_do_not_fit(self):
+        header = "=== palvelin ===\nentries read: 9  (err=9)"
+        intro = header + "\n\nChunk analyses:\n"
+        chunk_res = [result(f"S{i}.", [issue(title=f"t{i}")]) for i in range(1, 6)]
+        merged = [result(f"M{i}.", [issue(title=f"u{i}")]) for i in range(1, 5)]
+        size = len(json.dumps([chunk_res[0]], indent=1))
+        self.start_server(*[ok(r) for r in merged])
+        with mock.patch.object(analyze, "CHUNK_CHARS", len(intro) + 2 * (size + 1) + 1):  # two analyses per request
+            got = analyze.merge("palvelin/x", self.url, "m", header, chunk_res)
+        self.assertEqual(got, merged[3])
+        sent = [json.loads(unwrap(body["messages"][1]["content"]).removeprefix(intro)) for _, body in self.requests]
+        # round 1: S1+S2, S3+S4 (S5 kept); round 2: M1+M2 (S5 kept); round 3: M3+S5
+        self.assertEqual(sent, [chunk_res[0:2], chunk_res[2:4], merged[0:2], [merged[2], chunk_res[4]]])
+        for _, body in self.requests:
+            self.assertEqual(body["messages"][0]["content"], analyze.MERGE_PROMPT)
+
+    def test_single_result_needs_no_request(self):
+        self.assertEqual(analyze.merge("x", "http://127.0.0.1:1", "m", "h", [result()]), result())
+
+
 class PendingReportsTest(unittest.TestCase):
     def test_filters_and_order(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -457,6 +486,9 @@ class ValidateTest(unittest.TestCase):
             result(issues=[{k: v for k, v in issue().items() if k != "severity"}]),
             result(issues=[{k: v for k, v in issue().items() if k != "known"}]),
             result(issues=[issue(title=3)]),
+            result("bad \ud800 surrogate"),
+            result(issues=[issue(title="\udfff")]),
+            result(issues=[issue(details="x\ud83d")]),
             result(issues=[issue(), "not a dict"]),
             [],
             "text",
@@ -498,6 +530,25 @@ class RenderTest(unittest.TestCase):
             "  d1",
         ]
         self.assertEqual(out, "\n".join(expected) + "\n")
+
+    def test_model_text_cannot_start_lines(self):
+        forged = "x\n[critical] forged\r\n  more\x1b[2K\u2028end\u200b\ttab"
+        out = analyze.render(
+            "palvelin", "20261001-000000", "m", 1, result(forged, [issue("low", False, forged, forged)])
+        )
+        escaped = "x | [critical] forged |   more\\x1b[2K\\u2028end\\u200b\ttab"
+        self.assertEqual(
+            out.splitlines(),
+            [
+                "=== palvelin 20261001-000000 ===",
+                "model: m",
+                "chunks: 1",
+                f"summary: {escaped}",
+                "",
+                f"[low] {escaped}",
+                f"  {escaped}",
+            ],
+        )
 
     def test_no_issues(self):
         out = analyze.render("vakoilu", "20261002-030405", "-", 0, result("Quiet."))
@@ -567,9 +618,39 @@ class ChatTest(FakeServerMixin, unittest.TestCase):
                 with self.assertRaises(ValueError):
                     analyze.chat(self.url, "m", "s", "u")
 
-    def test_missing_message_keyerror(self):
+    def test_bad_reply_shapes(self):
+        status, body = ok()
+        cases = {
+            "null": None,
+            "list": [],
+            "string": "done",
+            "not done": {**body, "done": False, "done_reason": None},
+            "done missing": {k: v for k, v in body.items() if k != "done"},
+            "done not bool": {**body, "done": "true"},
+            "null prompt count": {**body, "prompt_eval_count": None},
+            "string eval count": {**body, "eval_count": "50"},
+            "bool count": {**body, "eval_count": True},
+            "null message": {**body, "message": None},
+            "message list": {**body, "message": []},
+            "null content": {**body, "message": {"role": "assistant", "content": None}},
+            "missing content": {**body, "message": {"role": "assistant"}},
+            "content dict": {**body, "message": {"role": "assistant", "content": {}}},
+        }
+        self.start_server(ok())
+        for name, reply in cases.items():
+            with self.subTest(name):
+                self.set_replies((status, reply))
+                with self.assertRaises(ValueError):
+                    analyze.chat(self.url, "m", "s", "u")
+
+    def test_unencodable_reply_is_invalid(self):
+        self.start_server(raw('{"summary": "\\ud800", "issues": []}'))
+        with self.assertRaises(ValueError):
+            analyze.chat(self.url, "m", "s", "u")
+
+    def test_missing_message_is_invalid(self):
         self.start_server(no_message())
-        with self.assertRaises(KeyError):
+        with self.assertRaises(ValueError):
             analyze.chat(self.url, "m", "s", "u")
 
     def test_context_just_below_limit_ok(self):
@@ -581,6 +662,17 @@ class ChatTest(FakeServerMixin, unittest.TestCase):
         with self.assertRaises(OSError) as cm:
             analyze.chat(self.url, "m", "s", "u")
         cm.exception.close()
+        self.assertEqual(cm.exception.code, 404)
+        self.assertEqual(str(cm.exception), """HTTP Error 404: Not Found: {"error": "model 'missing' not found"}""")
+
+    def test_proxy_environment_ignored(self):
+        self.start_server(ok())
+        proxy = closed_port_url()
+        env = {"http_proxy": proxy, "HTTP_PROXY": proxy, "no_proxy": "", "NO_PROXY": ""}
+        # no cached default opener, so urllib.request.urlopen() would read the proxy from the environment
+        with mock.patch.dict(os.environ, env), mock.patch.object(urllib.request, "_opener", None):
+            self.assertEqual(analyze.chat(self.url, "m", "s", "u"), result())
+        self.assertEqual(len(self.requests), 1)
 
 
 class ChatRetryTest(FakeServerMixin, unittest.TestCase):
@@ -624,6 +716,14 @@ class ChatRetryTest(FakeServerMixin, unittest.TestCase):
         ):
             analyze.chat_retry("lbl", self.url, "m", "s", "u")
         self.assertEqual([c.args[0] for c in self.sleep.call_args_list], [0, 7, 9])
+
+    def test_context_full_not_retried(self):
+        self.start_server(context_full(), ok())
+        with contextlib.redirect_stderr(io.StringIO()) as err, self.assertRaises(analyze.ContextFullError):
+            analyze.chat_retry("lbl", self.url, "m", "s", "u")
+        self.assertEqual(len(self.requests), 1)
+        self.assertEqual(self.sleep.call_count, 1)  # only the initial 0 s wait
+        self.assertIn("lbl: attempt 1 failed: context window full", err.getvalue())
 
     def test_unreachable_raises_oserror(self):
         url = closed_port_url()
@@ -715,7 +815,8 @@ class MainTest(FakeServerMixin, unittest.TestCase):
     def test_multi_chunk(self):
         chunk_res = [result(f"Chunk {i}.", [issue(title=f"t{i}")]) for i in range(1, 10)]
         merged = result("Merged.", [issue("critical", False, "merged issue", "All chunks.")])
-        header, blocks = self.add_report("palvelin", "20261001-000000", n_patterns=6)
+        # padded blocks: the small chunk limit still fits every chunk analysis into one merge request
+        header, blocks = self.add_report("palvelin", "20261001-000000", n_patterns=6, pad=1000)
         limit = len(header) + 2 * max(len(b) for b in blocks) + 5
         with mock.patch.object(analyze, "CHUNK_CHARS", limit):
             chunks = analyze.make_chunks(header, blocks)
@@ -848,8 +949,19 @@ class MainTest(FakeServerMixin, unittest.TestCase):
         self.assertNotIn("stopping", err)
         self.assertEqual(out.splitlines(), ["palvelin/20261002-000000: analyzed", "vakoilu/20261001-000000: analyzed"])
 
+    def test_context_full_skips_report_without_retries(self):
+        self.start_server(context_full(), ok())
+        self.add_report("palvelin", "20261001-000000")
+        self.add_report("palvelin", "20261002-000000")
+        rc, out, err = self.run_main()
+        self.assertEqual(rc, 1)
+        self.assertEqual(len(self.requests), 2)
+        self.assertIn("palvelin/20261001-000000: context window full", err)
+        self.assertEqual(out, "palvelin/20261002-000000: analyzed\n")
+        self.assertFalse(os.path.exists(self.analysis_path("palvelin", "20261001-000000")))
+
     def test_reply_without_message_skips_report(self):
-        # KeyError from a malformed reply is a bad reply for this report, not a reason to stop
+        # a reply without a message is a bad reply for this report, not a reason to stop
         self.start_server(no_message(), no_message(), no_message(), ok())
         self.add_report("palvelin", "20261001-000000")
         self.add_report("palvelin", "20261002-000000")
@@ -881,6 +993,73 @@ class MainTest(FakeServerMixin, unittest.TestCase):
             "[high] No journal entries received\n"
             "  The report read no journal entries at all. The host may be down or its logs may have stopped arriving.\n",
         )
+
+    def test_damaged_report_is_not_healthy(self):
+        self.start_server(ok())
+        d = os.path.join(self.report_dir, "palvelin")
+        os.mkdir(d)
+        for stamp, text in (("20261001-000000", ""), ("20261002-000000", "garbage\nmore garbage\n")):
+            with open(os.path.join(d, f"{stamp}.txt"), "w", encoding="utf-8") as f:
+                f.write(text)
+        self.add_report("palvelin", "20261003-000000")
+        rc, out, err = self.run_main()
+        self.assertEqual(rc, 1)
+        self.assertEqual(err.count("not a logfilter report: header missing"), 2)
+        self.assertEqual(out, "palvelin/20261003-000000: analyzed\n")
+        self.assertEqual(len(self.requests), 1)
+        self.assertFalse(os.path.exists(self.analysis_path("palvelin", "20261001-000000")))
+        self.assertFalse(os.path.exists(self.analysis_path("palvelin", "20261002-000000")))
+
+    def test_damaged_report_given_up_when_old(self):
+        self.start_server(ok())
+        d = os.path.join(self.report_dir, "palvelin")
+        os.mkdir(d)
+        with open(os.path.join(d, "20261001-000000.txt"), "w", encoding="utf-8") as f:
+            f.write("")
+        with mock.patch.object(analyze, "GIVE_UP_DAYS", 3):
+            rc, _, _ = self.run_main()
+        self.assertEqual(rc, 1)
+        self.assertIn("Gave up after 3 days: not a logfilter report", self.read_analysis("palvelin", "20261001-000000"))
+        self.assertEqual(self.requests, [])
+
+    def test_unencodable_reply_does_not_stop(self):
+        bad = raw('{"summary": "\\ud800", "issues": []}')
+        self.start_server(bad, bad, bad, ok())
+        self.add_report("palvelin", "20261001-000000")
+        self.add_report("palvelin", "20261002-000000")
+        rc, out, err = self.run_main()
+        self.assertEqual(rc, 1)
+        self.assertIn("palvelin/20261001-000000: reply does not match the schema", err)
+        self.assertEqual(out, "palvelin/20261002-000000: analyzed\n")
+        self.assertFalse(os.path.exists(self.analysis_path("palvelin", "20261001-000000")))
+
+    def test_missing_report_dir_is_not_an_error(self):
+        self.start_server(ok())
+        os.rmdir(self.report_dir)
+        rc, out, err = self.run_main()
+        self.assertEqual((rc, err), (0, ""))
+        self.assertEqual(out, f"{self.report_dir}: no report directory yet, nothing to analyze\n")
+        self.assertFalse(os.path.exists(self.report_dir))
+        with self.assertRaises(SystemExit) as cm:  # a named host still needs its directory
+            self.run_main("palvelin")
+        self.assertEqual(cm.exception.code, 2)
+
+    def test_report_dir_that_is_not_a_directory_is_an_error(self):
+        self.start_server(ok())
+        os.rmdir(self.report_dir)
+        with open(self.report_dir, "w", encoding="utf-8") as f:
+            f.write("not a directory\n")
+        argv = ["analyze.py", "--report-dir", self.report_dir, "--url", self.url, "--known-issues", self.known]
+        err = io.StringIO()
+        with (
+            mock.patch.object(sys, "argv", argv),
+            contextlib.redirect_stderr(err),
+            self.assertRaises(SystemExit) as cm,
+        ):
+            analyze.main()
+        self.assertEqual(cm.exception.code, 2)
+        self.assertIn("cannot read report directory", err.getvalue())
+        self.assertEqual(self.requests, [])
 
     def test_unreadable_report_does_not_stop(self):
         self.start_server(ok())
@@ -1011,7 +1190,15 @@ class MainTest(FakeServerMixin, unittest.TestCase):
     def test_url_must_be_http_or_https(self):
         self.start_server(ok())
         self.add_report("palvelin", "20261001-000000")
-        for url in ("file:///etc/passwd", "ftp://127.0.0.1/", "gopher://127.0.0.1/", "127.0.0.1:11434", "http://"):
+        for url in (
+            "file:///etc/passwd",
+            "ftp://127.0.0.1/",
+            "gopher://127.0.0.1/",
+            "127.0.0.1:11434",
+            "http://",
+            "http://:11434",
+            "http://user@",
+        ):
             with self.subTest(url=url):
                 with self.assertRaises(SystemExit) as cm:
                     self.run_main(url=url)

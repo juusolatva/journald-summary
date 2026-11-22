@@ -75,6 +75,7 @@ This exclusion does not apply if journal content or another untrusted input can 
 ## Known Limitations and Compensating Controls
 
 The supplied services configure a private state directory and filesystem restrictions; the analysis service also restricts network access to localhost.
+The analysis client does not authenticate the Ollama listener (Ollama has no TLS or authentication of its own); a local process that takes its address while Ollama is down receives report content. This is an accepted risk.
 These are deployment controls, not guarantees for manual execution or modified units.
 Prompt instructions and random data markers reduce prompt-injection risk but do not guarantee faithful analysis. Schema validation does not establish factual accuracy or safe display of model text.
 Displayed-field limits and request chunking do not bound total journal volume, pattern count, report size, or response size.

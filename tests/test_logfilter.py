@@ -10,6 +10,7 @@ import unicodedata
 import unittest
 from collections import Counter
 from datetime import datetime
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -105,6 +106,22 @@ class NormalizeTest(unittest.TestCase):
         self.assertEqual(self.norm("x 2001:db8:0:0:1:2:3:4 y"), ("x <IP> y", ["2001:db8:0:0:1:2:3:4"]))
         self.assertEqual(self.norm("listening on ::"), ("listening on <IP>", ["::"]))
 
+    def test_ipv6_followed_by_colon(self):
+        self.assertEqual(self.norm("host 2001:db8::1: timeout"), ("host <IP>: timeout", ["2001:db8::1"]))
+        self.assertEqual(self.norm("peer ::1: refused"), ("peer <IP>: refused", ["::1"]))
+        self.assertEqual(self.norm("to 2001:db8:abcd::5:"), ("to <IP>:", ["2001:db8:abcd::5"]))
+        full = "2001:db8:1:2:3:4:5:6"  # seven colons, eight with the delimiter
+        self.assertEqual(self.norm(f"host {full}: timeout"), ("host <IP>: timeout", [full]))
+        self.assertEqual(self.norm("host 2001:db8::: timeout"), ("host <IP>: timeout", ["2001:db8::"]))
+        self.assertEqual(self.norm("listening on 2001:db8::"), ("listening on <IP>", ["2001:db8::"]))
+        self.assertEqual(
+            self.norm("nine 1:2:3:4:5:6:7:8:9 groups"), ("nine <N>:<N>:<N>:<N>:<N>:<N>:<N>:<N>:<N> groups", [])
+        )
+        # not addresses without the colon either
+        self.assertEqual(self.norm("lease aa:bb:cc:dd:ee:ff: x"), ("lease <MAC>: x", []))
+        self.assertEqual(self.norm("at 10:20:30: x"), ("at <TIME>: x", []))
+        self.assertEqual(self.norm("value dead:beef:cafe: x"), ("value dead:beef:cafe: x", []))
+
     def test_ip_list_with_duplicates(self):
         _, ips = self.norm("a 192.0.2.1 b 2001:db8::5 c 192.0.2.1 d 198.51.100.2")
         self.assertEqual(sorted(ips), sorted(["192.0.2.1", "192.0.2.1", "198.51.100.2", "2001:db8::5"]))
@@ -193,16 +210,30 @@ class HelpersTest(unittest.TestCase):
         self.assertEqual(so({"_SYSTEMD_UNIT": "nginx.service"}, "nginx"), "nginx.service")
         self.assertEqual(so({"_SYSTEMD_UNIT": "init.scope"}, "systemd"), "systemd")
         self.assertEqual(so({"_SYSTEMD_USER_UNIT": "app.service"}, "app"), "app.service")
+        # real user services also carry the user manager's system unit
+        user = {"_SYSTEMD_UNIT": "user@1000.service", "_SYSTEMD_USER_UNIT": "app.service"}
+        self.assertEqual(so(user, "app"), "app.service")
+        manager = {"_SYSTEMD_UNIT": "user@1000.service", "_SYSTEMD_USER_UNIT": "init.scope"}
+        self.assertEqual(so(manager, "systemd"), "user@<N>.service")
         self.assertEqual(so({"_SYSTEMD_UNIT": "session-12.scope"}, "sshd"), "session-<N>.scope")
         self.assertEqual(so({}, "worker2"), "worker<N>")
         self.assertEqual(so({}, ""), "unknown")
         self.assertEqual(so({"_SYSTEMD_UNIT": ["a1.service", "b.service"]}, "x"), "a<N>.service")
+
+    def test_entry_priority(self):
+        for value, want in (("0", 0), ("3", 3), ("7", 7), (["4", "5"], 4), (None, 6), ("x", 6), ("-1", 6), ("8", 6)):
+            with self.subTest(value=value):
+                self.assertEqual(logfilter.entry_priority({"PRIORITY": value}), want)
+        self.assertEqual(logfilter.entry_priority({}), 6)
 
     def test_one_line(self):
         self.assertEqual(logfilter.one_line("a\nb\nc"), "a | b | c")
         self.assertEqual(logfilter.one_line("x" * 400), "x" * 400)
         self.assertEqual(logfilter.one_line("x" * 401), "x" * 400 + " …")
         self.assertEqual(logfilter.one_line("abcdef", limit=3), "abc …")
+        # only the first limit + 1 characters are replaced; the cut is the same as replacing everything
+        self.assertEqual(logfilter.one_line("abcd\n" + "x" * 10, limit=4), "abcd …")
+        self.assertEqual(logfilter.one_line("abc\nd", limit=4), "abc  …")
 
     def test_printable(self):
         pr = logfilter.printable
@@ -257,6 +288,16 @@ class HelpersTest(unittest.TestCase):
                 logfilter.write_atomic(path, "bad \ud800")
             self.assertEqual(logfilter.read_file(path), "second")
             self.assertEqual(os.listdir(os.path.dirname(path)), ["cursor"])
+
+    def test_write_atomic_without_overwrite(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "host", "report.txt")
+            logfilter.write_atomic(path, "first", overwrite=False)
+            self.assertEqual(logfilter.read_file(path), "first")
+            with self.assertRaises(FileExistsError):
+                logfilter.write_atomic(path, "second", overwrite=False)
+            self.assertEqual(logfilter.read_file(path), "first")
+            self.assertEqual(os.listdir(os.path.dirname(path)), ["report.txt"])
 
     def test_render_report_new_keys_membership_is_not_linear(self):
         class CountingList(list):
@@ -542,6 +583,8 @@ class NormalModeTest(E2EBase):
         self.assertIn(f"--since={logfilter.INITIAL_SINCE}", calls[0])
         self.assertFalse(any(a.startswith("--after-cursor") for a in calls[0]))
         self.assertIn("--output=json", calls[0])
+        self.assertIn("--all", calls[0])
+        self.assertIn("--output-fields=" + ",".join(logfilter.JOURNAL_FIELDS), calls[0])
         self.assertFalse(any(a.startswith("--directory") for a in calls[0]))
 
         out = res.stdout
@@ -691,6 +734,20 @@ class CliTest(E2EBase):
         self.assertEqual(journalctl_calls(self.bin), [])
         self.assertFalse(os.path.exists(self.reports))
 
+    def test_empty_since_with_report_dir_rejected(self):
+        res = self.run_lf("palvelin", "--since=", f"--report-dir={self.reports}")
+        self.assertEqual(res.returncode, 2)
+        self.assertIn("--report-dir cannot be used with --since", res.stderr)
+        self.assertEqual(journalctl_calls(self.bin), [])
+        self.assertFalse(os.path.exists(self.reports))
+
+    def test_repeated_host_processed_once(self):
+        self.set_entries([entry(1, "a warning", prio=4)])
+        res = self.run_lf("palvelin", "palvelin", f"--report-dir={self.reports}")
+        self.assertOk(res)
+        self.assertEqual(len(journalctl_calls(self.bin)), 1)
+        self.assertEqual(len(os.listdir(os.path.join(self.reports, "palvelin"))), 1)
+
     def test_unknown_host_rejected(self):
         res = self.run_lf("palvelin", "nosuchhost")
         self.assertEqual(res.returncode, 2)
@@ -729,6 +786,13 @@ class FilteringTest(E2EBase):
         self.assertIn("selected: 2 entries in 2 patterns (2 with rule matches, 2 new)", res.stdout)
         self.assertIn("[rule:fs_readonly] [NEW] info app.service x1", res.stdout)
         self.assertIn("[rule:hardware] [NEW] info kernel x1", res.stdout)
+
+    def test_out_of_range_priority_is_info(self):
+        self.set_entries([entry(1, "negative", prio=-1), entry(2, "facility added", prio=134)])
+        res = self.run_lf("palvelin")
+        self.assertOk(res)
+        self.assertIn("entries read: 2  (info=2)", res.stdout)
+        self.assertIn("selected: 0 entries in 0 patterns", res.stdout)
 
     def test_noise_dropped_regardless_of_priority(self):
         self.set_entries(
@@ -882,6 +946,65 @@ class FilteringTest(E2EBase):
         self.assertIn("valid warning", res.stdout)
         self.assertEqual(self.read_state("cursor"), "s=synthetic;i=1")
 
+    def test_non_object_lines_and_null_cursor_skipped(self):
+        self.set_entries(
+            ["null", "[]", '"text"', "42", entry(1, "valid warning", prio=4), entry(2, "no cursor", __CURSOR=None)]
+        )
+        res = self.run_lf("palvelin")
+        self.assertOk(res)
+        self.assertIn("entries read: 2  (warning=2)", res.stdout)
+        self.assertEqual(self.read_state("cursor"), "s=synthetic;i=1")
+
+    def test_clock_stepping_back_keeps_ranges_ordered(self):
+        later, earlier = BASE_TS + 100_000_000, BASE_TS + 1_000_000
+        self.set_entries(
+            [
+                entry(1, "same warning", prio=4, __REALTIME_TIMESTAMP=str(later)),
+                entry(2, "same warning", prio=4, __REALTIME_TIMESTAMP=str(earlier)),
+            ]
+        )
+        res = self.run_lf("palvelin")
+        self.assertOk(res)
+        span = f"{logfilter.fmt_ts(earlier)} -> {logfilter.fmt_ts(later)}"
+        self.assertIn(f"range: {span}\n", res.stdout)
+        self.assertTrue(self.pattern_line(res.stdout, "same warning").endswith(f"  {span}"))
+
+    def test_bad_timestamp_does_not_fail_host(self):
+        for value in (None, "abc", ["x"]):
+            with self.subTest(value=value):
+                self.set_entries([entry(1, "a warning", prio=4, __REALTIME_TIMESTAMP=value)])
+                res = self.run_lf("palvelin", "--since=1 day ago")  # preview: no cursor between subtests
+                self.assertOk(res)
+                self.assertIn("entries read: 1  (warning=1)", res.stdout)
+                self.assertIn(f"range: {logfilter.fmt_ts(0)} -> {logfilter.fmt_ts(0)}", res.stdout)
+
+
+class ReadJournalTest(unittest.TestCase):
+    def test_output_fields_cover_every_field_read(self):
+        with open(SCRIPT, encoding="utf-8") as f:
+            used = set(re.findall(r'entry\.get\("(\w+)"', f.read()))
+        always = {"__CURSOR", "__REALTIME_TIMESTAMP"}  # journalctl --output=json always prints these
+        self.assertEqual(used - always, set(logfilter.JOURNAL_FIELDS))
+
+    def test_journalctl_killed_and_closed_on_error(self):
+        script = "import sys\nfor i in range(100000):\n    print('{}')\n"
+        procs = []
+        real_popen = subprocess.Popen
+
+        def popen(*args, **kwargs):
+            procs.append(real_popen(*args, **kwargs))
+            return procs[-1]
+
+        with (
+            mock.patch.object(logfilter, "read_entry", side_effect=RuntimeError("boom")),
+            mock.patch.object(logfilter.subprocess, "Popen", popen),
+            self.assertRaisesRegex(RuntimeError, "boom"),
+        ):
+            logfilter.read_journal([sys.executable, "-c", script])
+        [proc] = procs
+        self.assertLess(proc.returncode, 0)  # killed (it was blocked writing) and waited for
+        self.assertTrue(proc.stdout.closed)
+
 
 class ReportFormatTest(E2EBase):
     def test_header_order_and_sort_and_size(self):
@@ -1004,6 +1127,33 @@ class ReportDirTest(E2EBase):
         )
         self.assertEqual(lines[lines.index("") + 1 : -1], expected)
         self.assertNotRegex(content, r"[\x00-\x08\x0b-\x1f\x7f\u2028]")
+
+    def test_existing_report_not_replaced(self):
+        """A second run in the same second must not replace the first report, whose entries the cursor has passed."""
+
+        class SameSecond(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return datetime(2026, 10, 7, 12, 0, 0, tzinfo=tz)
+
+        self.set_entries([entry(1, "a warning", prio=4)])
+        args = ("palvelin", None, self.state, self.reports)
+        with mock.patch.dict(os.environ, PATH=self.env["PATH"]), mock.patch.object(logfilter, "datetime", SameSecond):
+            logfilter.process_host(*args)
+            report = os.path.join(self.reports, "palvelin", "20261007-120000.txt")
+            with open(report, encoding="utf-8") as f:
+                first = f.read()
+            self.assertIn("a warning", first)
+            cursor, seen = self.read_state("cursor"), self.read_state("seen.json")
+            self.set_entries([entry(1, "a warning", prio=4), entry(2, "another warning", prio=4)])
+            with self.assertRaises(FileExistsError):
+                logfilter.process_host(*args)
+        with open(report, encoding="utf-8") as f:
+            self.assertEqual(f.read(), first)
+        self.assertEqual(os.listdir(os.path.join(self.reports, "palvelin")), ["20261007-120000.txt"])
+        # no state saved, so the next run reports entry 2
+        self.assertEqual(self.read_state("cursor"), cursor)
+        self.assertEqual(self.read_state("seen.json"), seen)
 
     def test_report_write_failure_saves_no_state(self):
         self.set_entries([entry(1, "a warning", prio=4)])

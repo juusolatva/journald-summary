@@ -32,7 +32,7 @@ sudo ./logfilter.py [HOST ...] [--since WINDOW] [--state-dir PATH] [--report-dir
 | `HOST ...` | Hosts to process. Default: every host in `HOSTS`. |
 | `--since WINDOW` | Preview mode. Reads a time window (`journalctl --since` syntax, e.g. `"2 hours ago"` or `yesterday`). Does not read the cursor and does not write state. |
 | `--state-dir PATH` | State root directory. Default: `/var/lib/logfilter`. |
-| `--report-dir PATH` | Write each report to `PATH/<host>/<YYYYmmdd-HHMMSS>.txt` instead of stdout. Not allowed with `--since`. |
+| `--report-dir PATH` | Write each report to `PATH/<host>/<YYYYmmdd-HHMMSS>.txt` instead of stdout. Not allowed with `--since`. An existing report file is never replaced: if one with the same name exists (two runs in the same second), the host fails without saving state, so the next run reports its entries. A host named twice is processed once. |
 
 Examples:
 
@@ -57,11 +57,11 @@ Each entry goes through these steps in this order:
 
 1. **`RULES`**: if a rule matches, the entry is always selected and tagged `[rule:<name>]`. Noise and priority limits do not apply. Built-in rules cover failed units, OOM, full disks, I/O and filesystem errors, read-only remounts, kernel crashes, segfaults and core dumps, hardware errors, undervoltage and thermal events.
 2. **`NOISE`**: if no rule matched and a noise pattern matches, the entry is dropped and counted as noise. This also applies to entries that match `ALWAYS_INCLUDE`.
-3. **Priority**: the entry is selected if its priority is `MAX_PRIORITY` (warning) or more severe, or if it matches `ALWAYS_INCLUDE` (by default: boot messages).
+3. **Priority**: the entry is selected if its priority is `MAX_PRIORITY` (warning) or more severe, or if it matches `ALWAYS_INCLUDE` (by default: boot messages). A missing, non-numeric or out-of-range (not 0-7) priority counts as info.
 
 ### Normalization and deduplication
 
-Selected messages are normalized: the `EXTRA_NORMALIZERS` run first (for example, the defaults replace Docker veth interface names with `veth<ID>` and libata register dumps with `<REGS>`, and drop coredump stack traces), then IPv4/IPv6 addresses, MAC addresses, timestamps, UUIDs, hex values and numbers are replaced with placeholders (`<IP>`, `<MAC>`, `<TIME>`, `<UUID>`, `<HEX>`, `<N>`). Entries with the same source (systemd unit, syslog identifier or `kernel`) and the same normalized template form one pattern. IP addresses are counted per pattern.
+Selected messages are normalized: the `EXTRA_NORMALIZERS` run first (for example, the defaults replace the user name in `invalid user` messages with `<USER>`, Docker veth interface names with `veth<ID>` and libata register dumps with `<REGS>`, and drop coredump stack traces), then IPv4/IPv6 addresses, MAC addresses, timestamps, UUIDs, hex values and numbers are replaced with placeholders (`<IP>`, `<MAC>`, `<TIME>`, `<UUID>`, `<HEX>`, `<N>`). Entries with the same source (systemd unit, preferring the user unit for user services; else syslog identifier or `kernel`) and the same normalized template form one pattern. IP addresses are counted per pattern.
 
 A pattern is **new** if its key is not yet in the host's `seen.json`. Changing normalization or how sources are selected can mark existing patterns new again.
 
@@ -147,11 +147,11 @@ sudo ./analyze.py [HOST ...] [--report-dir PATH] [--url URL] [--model MODEL] [--
 
 How it works:
 
-- Reports are processed oldest first within each host. A report with no selected patterns gets its analysis file without calling the model. If the report read no journal entries at all (`entries read: 0`), that analysis has a high-severity "No journal entries received" issue, because the host may be down or its logs may have stopped arriving.
-- A report that fits in `CHUNK_CHARS` is sent in one request. A larger one is split between pattern blocks, each chunk repeating the report header, and a final request merges the chunk results into one analysis.
-- Requests go to `/api/chat` with a JSON schema as `format`, temperature 0 and `num_ctx` set to `NUM_CTX`. A reply is accepted only if it matches the schema, generation was not cut short and the context window was not full.
+- Reports are processed oldest first within each host. If the report directory does not exist yet, there is nothing to analyze and the exit status is 0; if it cannot be read (for example, it is a file), the exit status is 2. A file without a report header (for example an empty one) fails like an unreadable report instead of being analyzed as "no issues". A report with no selected patterns gets its analysis file without calling the model. If the report read no journal entries at all (`entries read: 0`), that analysis has a high-severity "No journal entries received" issue, because the host may be down or its logs may have stopped arriving.
+- A report that fits in `CHUNK_CHARS` is sent in one request. A larger one is split between pattern blocks, each chunk repeating the report header, and merge requests combine the chunk results into one analysis. Each merge request takes as many chunk results as fit in `CHUNK_CHARS` (at least two), and merging repeats until one analysis is left.
+- Requests go to `/api/chat` with a JSON schema as `format`, temperature 0 and `num_ctx` set to `NUM_CTX`. A reply is accepted only if it is a finished response, matches the schema (with text that can be written as UTF-8), generation was not cut short and the context window was not full. Proxy environment variables are ignored. Model text is written on one line in the analysis file, with newlines as ` | ` and control characters escaped, so it cannot add issue lines.
 - Report text is log text that any program or user on a host can write, so each request puts it between `<data-ID>` and `</data-ID>` lines with a new random ID, and the prompts tell the model that this text is data, never instructions. This makes injected instructions in log lines less likely to steer the analysis, but cannot rule it out.
-- Each request is tried up to three times (`RETRY_DELAYS`). If Ollama cannot be reached, the run stops and leaves the remaining reports for the next run. If a report cannot be read or its replies stay invalid, that report is skipped and the others continue; once it is `GIVE_UP_DAYS` (3) days old by its file name, it gets an analysis file with a "Report could not be analyzed" issue instead and is no longer retried. In all these cases the exit status is 1.
+- Each request is tried up to three times (`RETRY_DELAYS`), except that a full context window fails at once, because the same request would fail the same way. If Ollama cannot be reached, the run stops and leaves the remaining reports for the next run. If a report cannot be read or its replies stay invalid, that report is skipped and the others continue; once it is `GIVE_UP_DAYS` (3) days old by its file name, it gets an analysis file with a "Report could not be analyzed" issue instead and is no longer retried. In all these cases the exit status is 1.
 - The known issues file has one issue per line (empty lines and lines starting with `#` are ignored), for example `palvelin: ata1 SATA link errors (SSD port, cable being checked)`. The model marks matching issues as known instead of leaving them out. A missing file means no known issues.
 
 Example analysis (synthetic data):
@@ -178,9 +178,10 @@ Settings at the top of `analyze.py`:
 |---|---|
 | `DEFAULT_REPORT_DIR`, `DEFAULT_URL`, `DEFAULT_MODEL` | Defaults for `--report-dir`, `--url`, `--model` |
 | `NUM_CTX` | Context window requested from Ollama, in tokens |
-| `CHUNK_CHARS` | Maximum report characters per request |
+| `CHUNK_CHARS` | Maximum report (or chunk analysis) characters per request |
 | `KNOWN_ISSUES` | Default for `--known-issues` |
 | `REQUEST_TIMEOUT` | Seconds to wait for one reply |
+| `ERROR_BODY_LIMIT` | Bytes of an HTTP error reply shown in the error message |
 | `RETRY_DELAYS` | Waits between attempts of one request |
 | `GIVE_UP_DAYS` | Age in days after which a report that keeps failing is no longer retried |
 | `SYSTEM_PROMPT`, `MERGE_PROMPT`, `SCHEMA` | Prompts and the reply schema |
@@ -196,10 +197,10 @@ sudo systemctl enable --now logfilter.timer
 
 The service runs once a day and writes reports to `/var/lib/logfilter/reports/<host>/`. It runs with `ProtectSystem=strict`, so a state or report directory outside `/var/lib/logfilter` needs a `ReadWritePaths=` entry in the unit.
 
-To run it immediately and check the result:
+To run it immediately and check the result (`--no-block` returns at once; without it, the command also waits for `analyze.service`, which it starts):
 
 ```
-sudo systemctl start logfilter.service
+sudo systemctl start --no-block logfilter.service
 journalctl -u logfilter.service
 ```
 
@@ -245,13 +246,13 @@ For manual testing:
 Do not test against real journals or the real state directory. Use a fake `journalctl` that prints synthetic JSON entries, and temporary state and report directories:
 
 ```
-mkdir -p /tmp/lf/bin
-cat > /tmp/lf/bin/journalctl <<'EOF'
+lf=$(mktemp -d) && mkdir "$lf/bin"
+cat > "$lf/bin/journalctl" <<'EOF'
 #!/bin/sh
 echo '{"__CURSOR":"s=x;i=1","__REALTIME_TIMESTAMP":"1791345600000000","PRIORITY":"3","MESSAGE":"Connection from 192.0.2.1 failed","SYSLOG_IDENTIFIER":"demo","_TRANSPORT":"journal","_HOSTNAME":"palvelin"}'
 EOF
-chmod +x /tmp/lf/bin/journalctl
-PATH=/tmp/lf/bin:$PATH python3 logfilter.py palvelin --state-dir /tmp/lf/state
+chmod +x "$lf/bin/journalctl"
+PATH="$lf/bin:$PATH" python3 logfilter.py palvelin --state-dir "$lf/state"
 ```
 
 Use only documentation address ranges in test data (`192.0.2.0/24`, `198.51.100.0/24`, `203.0.113.0/24`, `2001:db8::/32`). The gitignored `logfilter/` directory may contain sensitive production output; never commit it or copy its contents into examples or tests.
