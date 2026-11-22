@@ -16,3 +16,5 @@ ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
 NoNewPrivileges=yes
+# logfilter.py never uses the network.
+PrivateNetwork=yes

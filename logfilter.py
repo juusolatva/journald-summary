@@ -160,12 +160,15 @@ def normalize(msg):
     ips = []
 
     def ip_rep(m):
+        ip, tail = m.group(0), ""
+        if ip.endswith(":") and not ip.endswith("::"):  # IPv6 address followed by a colon: "peer ::1: refused"
+            ip, tail = ip[:-1], ":"
         try:
-            ipaddress.ip_address(m.group(0))
+            ipaddress.ip_address(ip)
         except ValueError:
             return m.group(0)
-        ips.append(m.group(0))
-        return "<IP>"
+        ips.append(ip)
+        return "<IP>" + tail
 
     for rx, rep in EXTRA_RX:
         msg = rx.sub(rep, msg)
@@ -199,8 +202,9 @@ def source_of(entry, ident):
     """Short label for where an entry came from, with numbers normalized."""
     if text(entry.get("_TRANSPORT")) == "kernel":
         return "kernel"
-    unit = text(entry.get("_SYSTEMD_UNIT")) or text(entry.get("_SYSTEMD_USER_UNIT"))
-    label = unit if unit and unit != "init.scope" else (ident or "unknown")
+    # A user service also has _SYSTEMD_UNIT=user@<UID>.service, so its own unit comes first.
+    units = (text(entry.get("_SYSTEMD_USER_UNIT")), text(entry.get("_SYSTEMD_UNIT")))
+    label = next((u for u in units if u and u != "init.scope"), ident or "unknown")
     return re.sub(r"\d+", "<N>", label)
 
 
@@ -241,7 +245,8 @@ def clip(s, limit):
 
 
 def one_line(s, limit=400):
-    return clip(s.replace("\n", " | "), limit)
+    # " | " never shortens text, so only the first limit + 1 characters need replacing.
+    return clip(s[: limit + 1].replace("\n", " | "), limit)
 
 
 # --- State files -------------------------------------------------------------
@@ -268,8 +273,11 @@ def load_seen(path):
     return seen
 
 
-def write_atomic(path, content):
-    """Write content to path via a uniquely named temporary file, flushed to disk before os.replace."""
+def write_atomic(path, content, overwrite=True):
+    """Write content to path via a uniquely named temporary file, flushed to disk before os.replace.
+
+    With overwrite=False an existing path is left as it is and FileExistsError is raised.
+    """
     directory = os.path.dirname(path)
     os.makedirs(directory, mode=0o700, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=directory, prefix=os.path.basename(path) + ".", suffix=".tmp")
@@ -278,7 +286,11 @@ def write_atomic(path, content):
             f.write(content)
             f.flush()
             os.fsync(f.fileno())
-        os.replace(tmp, path)
+        if overwrite:
+            os.replace(tmp, path)
+        else:
+            os.link(tmp, path)  # unlike os.replace, fails if path exists
+            os.unlink(tmp)
     except BaseException:
         os.unlink(tmp)
         raise
@@ -287,10 +299,24 @@ def write_atomic(path, content):
 # --- Main processing ---------------------------------------------------------
 
 
+# Journal fields read from each entry. JSON output always adds __CURSOR and __REALTIME_TIMESTAMP. Leaving out
+# the rest keeps large unused (for example binary) fields from being read and decoded.
+JOURNAL_FIELDS = [
+    "MESSAGE",
+    "PRIORITY",
+    "SYSLOG_IDENTIFIER",
+    "_COMM",
+    "_TRANSPORT",
+    "_SYSTEMD_UNIT",
+    "_SYSTEMD_USER_UNIT",
+]
+
+
 def journal_command(host, since, cursor):
     """Return the journalctl command and the report's mode description."""
     # --all: without it, fields over 4096 bytes (e.g. coredump stack traces) are output as null.
-    cmd = ["journalctl", "--output=json", "--all", "--no-pager", "--quiet"] + HOSTS[host]
+    cmd = ["journalctl", "--output=json", f"--output-fields={','.join(JOURNAL_FIELDS)}", "--all", "--no-pager"]
+    cmd += ["--quiet"] + HOSTS[host]
     if since is not None:
         return cmd + [f"--since={since}"], f"preview (since {since}; state not updated)"
     if cursor:
@@ -299,10 +325,12 @@ def journal_command(host, since, cursor):
 
 
 def entry_priority(entry):
+    """Syslog priority 0-7; anything else (missing, not a number, out of range) counts as info (6)."""
     try:
-        return int(text(entry.get("PRIORITY")))
+        prio = int(text(entry.get("PRIORITY")))
     except (TypeError, ValueError):
         return 6
+    return prio if 0 <= prio < len(PRIO_NAMES) else 6
 
 
 def classify(ident, msg, prio):
@@ -323,7 +351,7 @@ def classify(ident, msg, prio):
 def add_entry(patterns, entry, ident, msg, prio, ts, rules):
     source = source_of(entry, ident)
     template, ips = normalize(msg)
-    key = hashlib.sha1(f"{source}\0{template}".encode()).hexdigest()[:16]
+    key = hashlib.sha1(f"{source}\0{template}".encode(), usedforsecurity=False).hexdigest()[:16]
     p = patterns.get(key)
     if p is None:
         p = patterns[key] = {
@@ -338,10 +366,45 @@ def add_entry(patterns, entry, ident, msg, prio, ts, rules):
             "ips": Counter(),
         }
     p["count"] += 1
-    p["last"] = ts
+    p["first"] = min(p["first"], ts)
+    p["last"] = max(p["last"], ts)
     p["prio"] = min(p["prio"], prio)
     p["rules"].update(rules)
     p["ips"].update(ips)
+
+
+def entry_ts(entry):
+    """__REALTIME_TIMESTAMP in microseconds; 0 if it is missing or not a number."""
+    try:
+        return int(text(entry.get("__REALTIME_TIMESTAMP")))
+    except (TypeError, ValueError):
+        return 0
+
+
+def read_entry(stats, line):
+    """Count one journalctl JSON line and add it to the patterns if it is selected."""
+    try:
+        entry = json.loads(line)
+    except json.JSONDecodeError:
+        return
+    if not isinstance(entry, dict):
+        return
+    stats["total"] += 1
+    stats["last_cursor"] = text(entry.get("__CURSOR")) or stats["last_cursor"]
+    # min and max, not first and last: the clock can step back, for example at boot on a host without an RTC
+    ts = entry_ts(entry)
+    stats["first_ts"] = ts if stats["first_ts"] is None else min(stats["first_ts"], ts)
+    stats["last_ts"] = ts if stats["last_ts"] is None else max(stats["last_ts"], ts)
+    prio = entry_priority(entry)
+    stats["by_prio"][prio] += 1
+
+    msg = text(entry.get("MESSAGE")) or ""
+    ident = text(entry.get("SYSLOG_IDENTIFIER")) or text(entry.get("_COMM")) or ""
+    rules, verdict = classify(ident, msg, prio)
+    if verdict == "noise":
+        stats["noise"] += 1
+    elif verdict == "selected":
+        add_entry(stats["patterns"], entry, ident, msg, prio, ts, rules)
 
 
 def read_journal(cmd):
@@ -355,30 +418,13 @@ def read_journal(cmd):
         "last_ts": None,
         "last_cursor": None,
     }
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, text=True, encoding="utf-8", errors="replace")
-    for line in proc.stdout:
+    with subprocess.Popen(cmd, stdout=subprocess.PIPE, text=True, encoding="utf-8", errors="replace") as proc:
         try:
-            entry = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        stats["total"] += 1
-        stats["last_cursor"] = entry.get("__CURSOR", stats["last_cursor"])
-        ts = int(entry.get("__REALTIME_TIMESTAMP", 0))
-        if stats["first_ts"] is None:
-            stats["first_ts"] = ts
-        stats["last_ts"] = ts
-        prio = entry_priority(entry)
-        stats["by_prio"][prio] += 1
-
-        msg = text(entry.get("MESSAGE")) or ""
-        ident = text(entry.get("SYSLOG_IDENTIFIER")) or text(entry.get("_COMM")) or ""
-        rules, verdict = classify(ident, msg, prio)
-        if verdict == "noise":
-            stats["noise"] += 1
-        elif verdict == "selected":
-            add_entry(stats["patterns"], entry, ident, msg, prio, ts, rules)
-
-    proc.wait()
+            for line in proc.stdout:
+                read_entry(stats, line)
+        except BaseException:
+            proc.kill()  # so leaving the with block (which waits for journalctl) does not hang
+            raise
     if proc.returncode != 0:
         raise RuntimeError(f"journalctl exited with status {proc.returncode}")
     return stats
@@ -393,7 +439,7 @@ def pattern_lines(key, p, new_keys):
     tags = [f"[rule:{r}]" for r in sorted(p["rules"])]
     if key in new_keys:
         tags.append("[NEW]")
-    prio_name = PRIO_NAMES[p["prio"]] if 0 <= p["prio"] < 8 else str(p["prio"])
+    prio_name = PRIO_NAMES[p["prio"]]
     # A newline in the source is shown as \n, not as a " | " line break as in messages.
     head = " ".join(tags + [prio_name, clip(p["source"], SOURCE_LIMIT), f"x{p['count']}"])
     lines = [
@@ -459,7 +505,8 @@ def process_host(host, since, state_dir, report_dir):
     full = render_report(host, mode, stats, seen, new_keys)
     if report_dir:
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        write_atomic(os.path.join(report_dir, host, f"{stamp}.txt"), full)
+        # Never replace a report: one from the same second may hold entries the saved cursor has passed.
+        write_atomic(os.path.join(report_dir, host, f"{stamp}.txt"), full, overwrite=False)
     else:
         print(full)
 
@@ -477,10 +524,10 @@ def main():
     ap.add_argument("--state-dir", default=DEFAULT_STATE_DIR, help=f"state directory (default: {DEFAULT_STATE_DIR})")
     ap.add_argument("--report-dir", help="write each report to REPORT_DIR/<host>/<timestamp>.txt instead of stdout")
     args = ap.parse_args()
-    if args.since and args.report_dir:
+    if args.since is not None and args.report_dir:
         ap.error("--report-dir cannot be used with --since")
 
-    hosts = args.hosts or list(HOSTS)
+    hosts = list(dict.fromkeys(args.hosts or HOSTS))  # a repeated host would read nothing the second time
     unknown = [h for h in hosts if h not in HOSTS]
     if unknown:
         ap.error(f"unknown host(s): {', '.join(unknown)}")

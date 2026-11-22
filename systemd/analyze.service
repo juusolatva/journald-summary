@@ -5,7 +5,7 @@
 
 [Unit]
 Description=Analyze logfilter reports with the local Ollama model
-After=logfilter.service
+After=logfilter.service ollama.service
 
 [Service]
 Type=oneshot

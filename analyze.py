@@ -17,6 +17,8 @@ import secrets
 import sys
 import tempfile
 import time
+import unicodedata
+import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta
@@ -32,8 +34,9 @@ DEFAULT_MODEL = "qwen3:4b-instruct-2507-q8_0"
 # Context window requested from Ollama, in tokens.
 NUM_CTX = 16384
 
-# Maximum characters of report text per request. Report text is about 3
-# characters per token, so this leaves room for the prompt and the answer.
+# Maximum characters of report text (or of chunk analyses to merge) per request.
+# Report text is about 3 characters per token, so this leaves room for the
+# prompt and the answer.
 CHUNK_CHARS = 20000
 
 # One known issue per line; empty lines and lines starting with # are ignored.
@@ -41,6 +44,9 @@ KNOWN_ISSUES = "/etc/logfilter/known-issues.txt"
 
 # Seconds to wait for one Ollama reply.
 REQUEST_TIMEOUT = 900
+
+# Bytes of an HTTP error reply shown in the error message (Ollama explains the error there).
+ERROR_BODY_LIMIT = 500
 
 # Waits in seconds between attempts of one request. When all attempts fail, the
 # report is left for the next run.
@@ -70,8 +76,8 @@ selection counts.
 - Then one block per pattern. The first line has optional tags, the priority, \
 the source (systemd unit or program), the count (xN) and the first and last \
 time. "pattern:" is the message with variable parts replaced by placeholders \
-(<N>, <IP>, <HEX>, <TIME>, <MAC>, <UUID>, <REGS>). "example:" is one real \
-message. " | " inside a message is a line break.
+(<N>, <IP>, <HEX>, <TIME>, <MAC>, <UUID>, <REGS>, <USER>, veth<ID>). \
+"example:" is one real message. " | " inside a message is a line break.
 - [rule:<name>] means a rule for a known problem type matched. [NEW] means \
 the pattern has not been seen on this host before.
 - A large report is split into chunks; each chunk repeats the header.
@@ -136,6 +142,9 @@ REPORT_NAME = re.compile(r"^(\d{8}-\d{6})\.txt$")
 # Header line of a report that read no journal entries at all.
 NO_ENTRIES = re.compile(r"^entries read: 0 ", re.MULTILINE)
 
+# Header line that every report has.
+HEADER_COUNTS = re.compile(r"^entries read: \d+ ", re.MULTILINE)
+
 # --- Reports and chunks ------------------------------------------------------
 
 
@@ -156,19 +165,28 @@ def split_report(text):
     return "\n".join(lines[:blank]), blocks
 
 
+def pack(items, base, size=len, min_items=1):
+    """Group items in order so that base plus size(item) + 1 per item stays within CHUNK_CHARS.
+
+    A group takes at least min_items items, even if they do not fit.
+    """
+    groups, cur, total = [], [], base
+    for item in items:
+        n = size(item) + 1
+        if len(cur) >= min_items and total + n > CHUNK_CHARS:
+            groups.append(cur)
+            cur, total = [], base
+        cur.append(item)
+        total += n
+    if cur:
+        groups.append(cur)
+    return groups
+
+
 def make_chunks(header, blocks):
     """Pack pattern blocks into chunks of at most CHUNK_CHARS, each with the header."""
     # Room for the blank line after the header and a possible "chunk: i/n" line.
-    base = len(header) + len("\n\n") + len("\nchunk: 999/999")
-    groups, cur, size = [], [], base
-    for b in blocks:
-        if cur and size + len(b) + 1 > CHUNK_CHARS:
-            groups.append(cur)
-            cur, size = [], base
-        cur.append(b)
-        size += len(b) + 1
-    if cur:
-        groups.append(cur)
+    groups = pack(blocks, len(header) + len("\n\n") + len("\nchunk: 999/999"))
     n = len(groups)
     chunks = []
     for i, g in enumerate(groups, 1):
@@ -232,16 +250,27 @@ def write_atomic(path, content):
 # --- Ollama ------------------------------------------------------------------
 
 
+def is_text(value):
+    """True for a str that can be written as UTF-8 (a JSON escape can decode to an unpaired surrogate)."""
+    if not isinstance(value, str):
+        return False
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
 def validate(result):
-    ok = isinstance(result, dict) and isinstance(result.get("summary"), str) and isinstance(result.get("issues"), list)
+    ok = isinstance(result, dict) and is_text(result.get("summary")) and isinstance(result.get("issues"), list)
     for issue in result.get("issues", []) if ok else []:
         ok = (
             ok
             and isinstance(issue, dict)
             and issue.get("severity") in SEVERITIES
             and isinstance(issue.get("known"), bool)
-            and isinstance(issue.get("title"), str)
-            and isinstance(issue.get("details"), str)
+            and is_text(issue.get("title"))
+            and is_text(issue.get("details"))
         )
     if not ok:
         raise ValueError("reply does not match the schema")
@@ -253,6 +282,14 @@ def wrap_data(text):
     while tag in text:
         tag = secrets.token_hex(8)
     return f"<data-{tag}>\n{text}\n</data-{tag}>"
+
+
+# No proxies from the environment: the server is local, and the systemd unit allows only localhost anyway.
+OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
+class ContextFullError(ValueError):
+    """The request did not fit NUM_CTX. Sending it again cannot help, so chat_retry() does not."""
 
 
 def chat(url, model, system, user):
@@ -267,20 +304,39 @@ def chat(url, model, system, user):
     req = urllib.request.Request(
         url.rstrip("/") + "/api/chat", data=json.dumps(body).encode(), headers={"Content-Type": "application/json"}
     )
-    with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as resp:
-        reply = json.load(resp)
-    if reply.get("done_reason", "stop") != "stop":
-        raise ValueError(f"generation stopped early ({reply.get('done_reason')})")
-    used = reply.get("prompt_eval_count", 0) + reply.get("eval_count", 0)
-    if used >= NUM_CTX:  # Ollama truncates the prompt silently when it does not fit
-        raise ValueError(f"context window full ({used} tokens); lower CHUNK_CHARS or raise NUM_CTX")
-    result = json.loads(reply["message"]["content"])
+    try:
+        with OPENER.open(req, timeout=REQUEST_TIMEOUT) as resp:
+            reply = json.load(resp)
+    except urllib.error.HTTPError as exc:
+        with exc:  # closes the connection
+            detail = " ".join(exc.read(ERROR_BODY_LIMIT).decode("utf-8", "replace").split())
+        raise urllib.error.HTTPError(exc.url, exc.code, f"{exc.reason}: {detail}", exc.headers, None) from None
+    result = json.loads(reply_content(reply))
     validate(result)
     return result
 
 
+def reply_content(reply):
+    """message.content of a finished /api/chat reply; a reply of any other shape is a ValueError."""
+    if not isinstance(reply, dict) or reply.get("done", True) is not True:
+        raise ValueError("reply is not a finished chat response")
+    if reply.get("done_reason", "stop") != "stop":
+        raise ValueError(f"generation stopped early ({reply.get('done_reason')})")
+    counts = [reply.get("prompt_eval_count", 0), reply.get("eval_count", 0)]
+    if not all(isinstance(n, int) and not isinstance(n, bool) for n in counts):
+        raise ValueError("token counts are not integers")
+    used = sum(counts)
+    if used >= NUM_CTX:  # Ollama truncates the prompt silently when it does not fit
+        raise ContextFullError(f"context window full ({used} tokens); lower CHUNK_CHARS or raise NUM_CTX")
+    message = reply["message"]
+    content = message.get("content") if isinstance(message, dict) else None
+    if not isinstance(content, str):
+        raise ValueError("reply has no message content")  # noqa: TRY004 - bad replies take the ValueError path
+    return content
+
+
 def chat_retry(label, url, model, system, user):
-    """chat() with retries. Raises the last error when all attempts fail."""
+    """chat() with retries. Raises the last error when all attempts fail, or a ContextFullError at once."""
     delays = [0] + RETRY_DELAYS
     for attempt, delay in enumerate(delays, 1):
         time.sleep(delay)
@@ -288,28 +344,43 @@ def chat_retry(label, url, model, system, user):
             return chat(url, model, system, user)
         except (OSError, http.client.HTTPException, ValueError, KeyError) as exc:
             print(f"{label}: attempt {attempt} failed: {exc}", file=sys.stderr)
-            if attempt == len(delays):
+            if attempt == len(delays) or isinstance(exc, ContextFullError):
                 raise
 
 
 # --- Main processing ---------------------------------------------------------
 
 
+def one_line(s):
+    """Model text on one line: newlines as " | ", other control, format and line separator characters escaped."""
+    s = s.replace("\r\n", "\n").replace("\n", " | ")
+    return "".join(
+        ch.encode("unicode_escape").decode("ascii")
+        if ch != "\t" and unicodedata.category(ch) in ("Cc", "Cf", "Zl", "Zp")
+        else ch
+        for ch in s
+    )
+
+
 def render(host, stamp, model, n_chunks, result):
-    out = [f"=== {host} {stamp} ===", f"model: {model}", f"chunks: {n_chunks}", f"summary: {result['summary']}", ""]
+    """Analysis text. Model-written fields go through one_line(), so only this function starts a line."""
+    summary = one_line(result["summary"])
+    out = [f"=== {host} {stamp} ===", f"model: {model}", f"chunks: {n_chunks}", f"summary: {summary}", ""]
     issues = sorted(result["issues"], key=lambda i: (i["known"], SEVERITIES.index(i["severity"])))
     if not issues:
         out.append("no issues")
     for i in issues:
         tags = f"[{i['severity']}]" + (" [known]" if i["known"] else "")
-        out.append(f"{tags} {i['title']}")
-        out.append(f"  {i['details']}")
+        out.append(f"{tags} {one_line(i['title'])}")
+        out.append(f"  {one_line(i['details'])}")
     return "\n".join(out) + "\n"
 
 
 def analyze_report(host, stamp, path, url, model, system):
     header, blocks = split_report(read_report(path))
     label = f"{host}/{stamp}"
+    if not (header.startswith("=== ") and HEADER_COUNTS.search(header)):  # empty or damaged file
+        raise ValueError("not a logfilter report: header missing")
     if NO_ENTRIES.search(header):  # a quiet host still logs something; nothing at all means logs stopped arriving
         silent = {
             "severity": "high",
@@ -326,13 +397,31 @@ def analyze_report(host, stamp, path, url, model, system):
         return render(host, stamp, "-", 0, result)
     chunks = make_chunks(header, blocks)
     results = [chat_retry(f"{label} chunk {i}/{len(chunks)}", url, model, system, c) for i, c in enumerate(chunks, 1)]
-    if len(results) == 1:
-        result = results[0]
-    else:
-        result = chat_retry(
-            f"{label} merge", url, model, MERGE_PROMPT, header + "\n\nChunk analyses:\n" + json.dumps(results, indent=1)
-        )
-    return render(host, stamp, model, len(chunks), result)
+    return render(host, stamp, model, len(chunks), merge(label, url, model, header, results))
+
+
+def merge(label, url, model, header, results):
+    """Merge chunk analyses into one, in rounds of requests that fit CHUNK_CHARS.
+
+    Each request takes at least two analyses, so every round leaves fewer; a single one left over is kept as it is.
+    """
+    intro = header + "\n\nChunk analyses:\n"
+    while len(results) > 1:
+        groups = pack(results, len(intro), size=lambda r: len(json.dumps([r], indent=1)), min_items=2)
+        n = len(groups)
+        results = [
+            g[0]
+            if len(g) == 1
+            else chat_retry(
+                f"{label} merge" + (f" {i}/{n}" if n > 1 else ""),
+                url,
+                model,
+                MERGE_PROMPT,
+                intro + json.dumps(g, indent=1),
+            )
+            for i, g in enumerate(groups, 1)
+        ]
+    return results[0]
 
 
 def main():
@@ -346,9 +435,12 @@ def main():
     ap.add_argument("--known-issues", default=KNOWN_ISSUES, help=f"known issues file (default: {KNOWN_ISSUES})")
     args = ap.parse_args()
     url = urllib.parse.urlsplit(args.url)
-    if url.scheme not in ("http", "https") or not url.netloc:
+    if url.scheme not in ("http", "https") or not url.hostname:
         ap.error(f"--url must be an http:// or https:// URL: {args.url}")
 
+    if not args.hosts and not os.path.isdir(args.report_dir):  # logfilter has not written any report yet
+        print(f"{args.report_dir}: no report directory yet, nothing to analyze")
+        return 0
     hosts = args.hosts or sorted(
         d for d in os.listdir(args.report_dir) if os.path.isdir(os.path.join(args.report_dir, d))
     )
