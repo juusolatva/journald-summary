@@ -625,6 +625,7 @@ class ChatTest(FakeServerMixin, unittest.TestCase):
             "list": [],
             "string": "done",
             "not done": {**body, "done": False, "done_reason": None},
+            "done missing": {k: v for k, v in body.items() if k != "done"},
             "done not bool": {**body, "done": "true"},
             "null prompt count": {**body, "prompt_eval_count": None},
             "string eval count": {**body, "eval_count": "50"},
@@ -647,9 +648,9 @@ class ChatTest(FakeServerMixin, unittest.TestCase):
         with self.assertRaises(ValueError):
             analyze.chat(self.url, "m", "s", "u")
 
-    def test_missing_message_keyerror(self):
+    def test_missing_message_is_invalid(self):
         self.start_server(no_message())
-        with self.assertRaises(KeyError):
+        with self.assertRaises(ValueError):
             analyze.chat(self.url, "m", "s", "u")
 
     def test_context_just_below_limit_ok(self):
@@ -960,7 +961,7 @@ class MainTest(FakeServerMixin, unittest.TestCase):
         self.assertFalse(os.path.exists(self.analysis_path("palvelin", "20261001-000000")))
 
     def test_reply_without_message_skips_report(self):
-        # KeyError from a malformed reply is a bad reply for this report, not a reason to stop
+        # a reply without a message is a bad reply for this report, not a reason to stop
         self.start_server(no_message(), no_message(), no_message(), ok())
         self.add_report("palvelin", "20261001-000000")
         self.add_report("palvelin", "20261002-000000")
@@ -1042,6 +1043,23 @@ class MainTest(FakeServerMixin, unittest.TestCase):
         with self.assertRaises(SystemExit) as cm:  # a named host still needs its directory
             self.run_main("palvelin")
         self.assertEqual(cm.exception.code, 2)
+
+    def test_report_dir_that_is_not_a_directory_is_an_error(self):
+        self.start_server(ok())
+        os.rmdir(self.report_dir)
+        with open(self.report_dir, "w", encoding="utf-8") as f:
+            f.write("not a directory\n")
+        argv = ["analyze.py", "--report-dir", self.report_dir, "--url", self.url, "--known-issues", self.known]
+        err = io.StringIO()
+        with (
+            mock.patch.object(sys, "argv", argv),
+            contextlib.redirect_stderr(err),
+            self.assertRaises(SystemExit) as cm,
+        ):
+            analyze.main()
+        self.assertEqual(cm.exception.code, 2)
+        self.assertIn("cannot read report directory", err.getvalue())
+        self.assertEqual(self.requests, [])
 
     def test_unreadable_report_does_not_stop(self):
         self.start_server(ok())

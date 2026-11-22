@@ -318,7 +318,7 @@ def chat(url, model, system, user):
 
 def reply_content(reply):
     """message.content of a finished /api/chat reply; a reply of any other shape is a ValueError."""
-    if not isinstance(reply, dict) or reply.get("done", True) is not True:
+    if not isinstance(reply, dict) or reply.get("done") is not True:
         raise ValueError("reply is not a finished chat response")
     if reply.get("done_reason", "stop") != "stop":
         raise ValueError(f"generation stopped early ({reply.get('done_reason')})")
@@ -328,7 +328,7 @@ def reply_content(reply):
     used = sum(counts)
     if used >= NUM_CTX:  # Ollama truncates the prompt silently when it does not fit
         raise ContextFullError(f"context window full ({used} tokens); lower CHUNK_CHARS or raise NUM_CTX")
-    message = reply["message"]
+    message = reply.get("message")
     content = message.get("content") if isinstance(message, dict) else None
     if not isinstance(content, str):
         raise ValueError("reply has no message content")  # noqa: TRY004 - bad replies take the ValueError path
@@ -424,6 +424,23 @@ def merge(label, url, model, header, results):
     return results[0]
 
 
+def report_hosts(ap, args):
+    """Hosts to analyze: the named ones, or every directory in the report directory (none if it is missing)."""
+    if args.hosts:
+        unknown = [h for h in args.hosts if not os.path.isdir(os.path.join(args.report_dir, h))]
+        if unknown:
+            ap.error(f"no report directory for host(s): {', '.join(unknown)}")
+        return args.hosts
+    try:
+        names = os.listdir(args.report_dir)
+    except FileNotFoundError:  # logfilter has not written any report yet
+        print(f"{args.report_dir}: no report directory yet, nothing to analyze")
+        return []
+    except OSError as exc:  # not a directory, no permission: a setup error, not an empty run
+        ap.error(f"cannot read report directory: {exc}")
+    return sorted(d for d in names if os.path.isdir(os.path.join(args.report_dir, d)))
+
+
 def main():
     ap = argparse.ArgumentParser(description="Analyze logfilter reports with a local Ollama model.")
     ap.add_argument("hosts", nargs="*", help="hosts to process (default: every directory in the report directory)")
@@ -438,15 +455,7 @@ def main():
     if url.scheme not in ("http", "https") or not url.hostname:
         ap.error(f"--url must be an http:// or https:// URL: {args.url}")
 
-    if not args.hosts and not os.path.isdir(args.report_dir):  # logfilter has not written any report yet
-        print(f"{args.report_dir}: no report directory yet, nothing to analyze")
-        return 0
-    hosts = args.hosts or sorted(
-        d for d in os.listdir(args.report_dir) if os.path.isdir(os.path.join(args.report_dir, d))
-    )
-    unknown = [h for h in hosts if not os.path.isdir(os.path.join(args.report_dir, h))]
-    if unknown:
-        ap.error(f"no report directory for host(s): {', '.join(unknown)}")
+    hosts = report_hosts(ap, args)
 
     known = load_known(args.known_issues)
     system = SYSTEM_PROMPT + "\nKnown issues:\n" + ("\n".join(f"- {k}" for k in known) or "none") + "\n"

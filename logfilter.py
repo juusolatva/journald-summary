@@ -135,7 +135,8 @@ RX_TIME = re.compile(
 RX_UUID = re.compile(r"\b[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}\b")
 RX_MAC = re.compile(r"\b(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}\b")
 RX_IPV4 = re.compile(r"\b\d{1,3}(?:\.\d{1,3}){3}\b")
-RX_IPV6 = re.compile(r"(?<![\w:])[0-9A-Fa-f]{0,4}(?::[0-9A-Fa-f]{0,4}){2,7}(?![\w:])")
+# Up to eight colons: seven in a full address, plus a colon delimiter after it (see ip_rep in normalize).
+RX_IPV6 = re.compile(r"(?<![\w:])[0-9A-Fa-f]{0,4}(?::[0-9A-Fa-f]{0,4}){2,8}(?![\w:])")
 RX_HEX = re.compile(r"\b0x[0-9A-Fa-f]+\b|\b(?=[0-9A-Fa-f]*\d)(?=[0-9A-Fa-f]*[A-Fa-f])[0-9A-Fa-f]{8,}\b")
 RX_NUM = re.compile(r"\b\d+(?:\.\d+)*(?:[A-Za-z]{1,3})?\b")
 
@@ -152,6 +153,14 @@ NOISE_RX = compile_list(NOISE)
 EXTRA_RX = [(re.compile(rx), rep) for rx, rep in EXTRA_NORMALIZERS]
 
 
+def valid_ip(s):
+    try:
+        ipaddress.ip_address(s)
+    except ValueError:
+        return False
+    return True
+
+
 def normalize(msg):
     """Replace variable parts of a message with placeholders.
 
@@ -161,11 +170,9 @@ def normalize(msg):
 
     def ip_rep(m):
         ip, tail = m.group(0), ""
-        if ip.endswith(":") and not ip.endswith("::"):  # IPv6 address followed by a colon: "peer ::1: refused"
+        if not valid_ip(ip) and ip.endswith(":"):  # IPv6 address followed by a colon: "peer ::1: refused"
             ip, tail = ip[:-1], ":"
-        try:
-            ipaddress.ip_address(ip)
-        except ValueError:
+        if not valid_ip(ip):
             return m.group(0)
         ips.append(ip)
         return "<IP>" + tail

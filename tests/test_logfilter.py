@@ -110,6 +110,13 @@ class NormalizeTest(unittest.TestCase):
         self.assertEqual(self.norm("host 2001:db8::1: timeout"), ("host <IP>: timeout", ["2001:db8::1"]))
         self.assertEqual(self.norm("peer ::1: refused"), ("peer <IP>: refused", ["::1"]))
         self.assertEqual(self.norm("to 2001:db8:abcd::5:"), ("to <IP>:", ["2001:db8:abcd::5"]))
+        full = "2001:db8:1:2:3:4:5:6"  # seven colons, eight with the delimiter
+        self.assertEqual(self.norm(f"host {full}: timeout"), ("host <IP>: timeout", [full]))
+        self.assertEqual(self.norm("host 2001:db8::: timeout"), ("host <IP>: timeout", ["2001:db8::"]))
+        self.assertEqual(self.norm("listening on 2001:db8::"), ("listening on <IP>", ["2001:db8::"]))
+        self.assertEqual(
+            self.norm("nine 1:2:3:4:5:6:7:8:9 groups"), ("nine <N>:<N>:<N>:<N>:<N>:<N>:<N>:<N>:<N> groups", [])
+        )
         # not addresses without the colon either
         self.assertEqual(self.norm("lease aa:bb:cc:dd:ee:ff: x"), ("lease <MAC>: x", []))
         self.assertEqual(self.norm("at 10:20:30: x"), ("at <TIME>: x", []))
