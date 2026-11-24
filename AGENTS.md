@@ -46,7 +46,7 @@ Stage 2, `analyze.py`, reads the report files and sends them, in chunks when nee
 
 ## Hard constraints
 
-- Python 3.13 or newer, standard library only, for `logfilter.py`, `analyze.py` and the tests (`requirements.txt` lists no runtime dependencies). No third-party packages, no `python-systemd`, no other languages. The only exception is development and CI tooling (`pytest`, `pytest-cov`, `ruff`) in `requirements-dev.txt`, pinned with hashes in `requirements-dev.lock`; never import it from the scripts or tests.
+- Python 3.13 or newer, standard library only, for `logfilter.py`, `analyze.py` and the tests (no runtime dependencies, so there is no `requirements.txt`: Semgrep Supply Chain fails to parse a requirements file with no requirements). No third-party packages, no `python-systemd`, no other languages. The only exception is development and CI tooling (`pytest`, `pytest-cov`, `ruff`) in `requirements-dev.txt`, pinned with hashes in `requirements-dev.lock`; never import it from the scripts or tests.
 - Read the journal only through `journalctl --output=json` via `subprocess`. Never parse `journalctl` text output: it is locale-dependent (palvelin prints Finnish month names such as `loka` and `syys`).
 - Keep `--all` in the journalctl command; without it, fields larger than 4096 bytes can be returned as null.
 - The command requests only `JOURNAL_FIELDS` with `--output-fields` (JSON output always adds `__CURSOR` and `__REALTIME_TIMESTAMP`), so large unused fields are never read. Add a field there when the code starts reading it; `ReadJournalTest` checks every `entry.get()` field against the list.
