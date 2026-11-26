@@ -210,7 +210,7 @@ For each issue it shows the host, in how many reports the issue appeared, the da
 - `s`: skip it for now; it is asked again on the next run.
 - `q` (or Ctrl-D, Ctrl-C): stop. Answers given so far are kept.
 
-Each answer is saved at once. Added and declined issues are written to the reviewed file as `<host>: <title>` and are not asked again; titles are compared ignoring case and spacing. The model words the same problem differently on different days, so one problem can come up more than once under different titles. Issues are grouped by host and title, sorted by host, severity and number of reports. Analyses written without the model (`model: -`, such as "No journal entries received") are skipped, because known issues do not apply to them.
+Each answer is saved at once. Added and declined issues are written to the reviewed file as `<host>: <title>` and are not asked again; titles are compared ignoring case and spacing. The model words the same problem differently on different days, so one problem can come up more than once under different titles. Issues are grouped by host and title, sorted by host, severity and number of reports. An issue the model marked `[known]` in any of the analyses read is not asked about, since the known issues file already covers it. Analyses written without the model (`model: -`, such as "No journal entries received") are skipped, because known issues do not apply to them.
 
 ## Installation (daily systemd timer)
 

@@ -78,21 +78,28 @@ def analyses(report_dir, host, since):
             print(f"{host}/{name}: skipped: {exc}", file=sys.stderr)
 
 
+def add_issues(found, skip, host, stamp, issues):
+    """Add one analysis's issues to found (oldest analysis first, so the latest details win)."""
+    for issue in issues:
+        key = (host, norm(issue["title"]))
+        if issue["known"]:  # the known issues file already covers it, also in earlier reports
+            skip.add(key)
+            found.pop(key, None)
+        if key in skip:
+            continue
+        cand = found.setdefault(key, {"host": host, "stamps": set()})
+        cand.update(issue, last=stamp)
+        cand["stamps"].add(stamp)
+
+
 def collect(report_dir, hosts, since, reviewed):
-    """Issues not marked known and not reviewed yet, one per host and title, details from the latest report."""
-    found = {}
+    """Issues not reviewed yet and not marked known in any report, one per host and title, latest details."""
+    found, skip = {}, set(reviewed)
     for host in hosts:
         for stamp, text in analyses(report_dir, host, since):
             model, issues = parse_analysis(text)
-            if model in (None, "-"):  # analyze.py wrote it without the model, so known issues do not apply
-                continue
-            for issue in issues:
-                key = (host, norm(issue["title"]))
-                if issue["known"] or key in reviewed:
-                    continue
-                cand = found.setdefault(key, {"host": host, "stamps": set()})
-                cand.update(issue, last=stamp)
-                cand["stamps"].add(stamp)
+            if model not in (None, "-"):  # without the model (analyze.py wrote it), known issues do not apply
+                add_issues(found, skip, host, stamp, issues)
     return sorted(
         found.values(), key=lambda c: (c["host"], SEVERITIES.index(c["severity"]), -len(c["stamps"]), norm(c["title"]))
     )
@@ -226,13 +233,12 @@ def main():
     cands = collect(args.report_dir, hosts, since, load_reviewed(reviewed_path))
     if not cands:
         print("No issues to review.")
-        return 0
+        return
     print(f"{len(cands)} issue(s) to review. Added lines go to {args.known_issues}.")
     counts = review(cands, args.known_issues, reviewed_path)
     left = len(cands) - sum(counts.values())
     print(f"Added {counts['add']}, declined {counts['decline']}, skipped {counts['skip']}, {left} not reached.")
-    return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    main()

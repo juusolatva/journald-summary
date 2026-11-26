@@ -108,6 +108,12 @@ class CollectTest(Dirs):
         got = self.collect(reviewed={("palvelin", "reviewed one")})
         self.assertEqual([c["title"] for c in got], ["Fresh"])
 
+    def test_known_in_any_report_is_skipped(self):
+        self.add("palvelin", 3, [("high", False, "Known later", "d")])
+        self.add("palvelin", 2, [("high", True, "known  LATER", "d")])
+        self.add("palvelin", 1, [("high", False, "Known later", "d"), ("low", False, "Other", "d")])
+        self.assertEqual([c["title"] for c in self.collect()], ["Other"])
+
     def test_ignores_other_files(self):
         self.write("palvelin", f"{stamp(1)}.txt", analysis("palvelin", "x", [("high", False, "Report", "d")]))
         self.write("palvelin", "notes.analysis.txt", analysis("palvelin", "x", [("high", False, "Notes", "d")]))
@@ -229,7 +235,8 @@ class MainTest(Dirs):
             contextlib.redirect_stderr(err),
         ):
             try:
-                status = known_issues.main()
+                known_issues.main()
+                status = 0
             except SystemExit as exc:
                 status = exc.code
         return status, out.getvalue(), err.getvalue()
