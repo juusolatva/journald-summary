@@ -152,7 +152,7 @@ How it works:
 - Requests go to `/api/chat` with a JSON schema as `format`, thinking off (`think: false`), temperature 0 and `num_ctx` set to `NUM_CTX`. A reply is accepted only if it is a finished response, matches the schema (with text that can be written as UTF-8), generation was not cut short and the context window was not full. Proxy environment variables are ignored. Model text is written on one line in the analysis file, with newlines as ` | ` and control characters escaped, so it cannot add issue lines.
 - Report text is log text that any program or user on a host can write, so each request puts it between `<data-ID>` and `</data-ID>` lines with a new random ID, and the prompts tell the model that this text is data, never instructions. This makes injected instructions in log lines less likely to steer the analysis, but cannot rule it out.
 - Each request is tried up to three times (`RETRY_DELAYS`), except that a full context window fails at once, because the same request would fail the same way. If Ollama cannot be reached, the run stops and leaves the remaining reports for the next run. If a report cannot be read or its replies stay invalid, that report is skipped and the others continue; once it is `GIVE_UP_DAYS` (3) days old by its file name, it gets an analysis file with a "Report could not be analyzed" issue instead and is no longer retried. In all these cases the exit status is 1.
-- The known issues file has one issue per line (empty lines and lines starting with `#` are ignored), for example `palvelin: ata1 SATA link errors (SSD port, cable being checked)`. The model marks matching issues as known instead of leaving them out. A missing file means no known issues.
+- The known issues file has one issue per line (empty lines and lines starting with `#` are ignored), for example `palvelin: ata1 SATA link errors (SSD port, cable being checked)`. The model marks matching issues as known instead of leaving them out. A missing file means no known issues. `known_issues.py` (below) helps fill it in.
 
 Example analysis (synthetic data):
 
@@ -186,6 +186,32 @@ Settings at the top of `analyze.py`:
 | `GIVE_UP_DAYS` | Age in days after which a report that keeps failing is no longer retried |
 | `SYSTEM_PROMPT`, `MERGE_PROMPT`, `SCHEMA` | Prompts and the reply schema |
 
+### Known issues
+
+`known_issues.py` builds the known issues file from earlier analyses. It collects the issues the model did not mark `[known]` in recent analysis files and asks about them one at a time. Python 3.13 or newer, standard library only.
+
+```
+sudo ./known_issues.py [HOST ...] [--report-dir PATH] [--known-issues PATH] [--reviewed PATH] [--days N]
+```
+
+| Option | Meaning |
+|---|---|
+| `HOST ...` | Hosts to review. Default: every directory in the report directory. |
+| `--report-dir PATH` | Report directory. Default: `/var/lib/logfilter/reports`. |
+| `--known-issues PATH` | Known issues file to add lines to. Default: `/etc/logfilter/known-issues.txt`. |
+| `--reviewed PATH` | File of issues already answered. Default: the known issues file with the suffix `.reviewed` (`/etc/logfilter/known-issues.reviewed`). |
+| `--days N` | Read analyses of reports from the last N days. Default: 7. |
+
+For each issue it shows the host, in how many reports the issue appeared, the date of the latest one, the severity, the title and the details from the latest report, then asks:
+
+- `y`: add `<host>: <title>` to the known issues file.
+- `e`: edit the line before adding it (prefilled with `<host>: <title>`; an empty line goes back to the question). The model compares new issues against this text, so a specific line (what the problem is and why it is known) works better than a vague title.
+- `n`: do not add it.
+- `s`: skip it for now; it is asked again on the next run.
+- `q` (or Ctrl-D, Ctrl-C): stop. Answers given so far are kept.
+
+Each answer is saved at once. Added and declined issues are written to the reviewed file as `<host>: <title>` and are not asked again; titles are compared ignoring case and spacing. The model words the same problem differently on different days, so one problem can come up more than once under different titles. Issues are grouped by host and title, sorted by host, severity and number of reports. An issue the model marked `[known]` in any of the analyses read is not asked about, since the known issues file already covers it. Analyses written without the model (`model: -`, such as "No journal entries received") are skipped, because known issues do not apply to them.
+
 ## Installation (daily systemd timer)
 
 ```
@@ -213,6 +239,12 @@ sudo systemctl daemon-reload
 ```
 
 `logfilter.service` pulls in `analyze.service` (`Wants=`), which starts after logfilter has finished, also when one host failed. If the analysis fails, systemd restarts it every 30 minutes until all reports are analyzed. The service may only connect to localhost (`IPAddressAllow=localhost`). The first run analyzes every existing report that has no analysis file yet.
+
+The known issues tool is run by hand, so installing it is optional:
+
+```
+sudo install -m 755 known_issues.py /usr/local/bin/known_issues.py
+```
 
 ## Testing
 
@@ -262,7 +294,7 @@ To test `analyze.py` without a real model, run a small fake Ollama server (`http
 Syntax check:
 
 ```
-python3 -m py_compile logfilter.py analyze.py
+python3 -m py_compile logfilter.py analyze.py known_issues.py
 ```
 
 ## License
