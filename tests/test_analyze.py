@@ -581,6 +581,8 @@ class ChatTest(FakeServerMixin, unittest.TestCase):
         self.assertIs(body["stream"], False)
         self.assertEqual(body["format"], analyze.SCHEMA)
         self.assertIs(body["think"], False)
+        self.assertEqual(body["format"]["properties"]["issues"]["maxItems"], analyze.MAX_ISSUES)
+        self.assertIn(f"at most {analyze.MAX_ISSUES}.", analyze.SYSTEM_PROMPT)
         self.assertEqual(body["options"], {"num_ctx": analyze.NUM_CTX, "temperature": 0})
         self.assertEqual([m["role"] for m in body["messages"]], ["system", "user"])
         self.assertEqual(body["messages"][0]["content"], "SYS")
@@ -652,6 +654,11 @@ class ChatTest(FakeServerMixin, unittest.TestCase):
     def test_missing_message_is_invalid(self):
         self.start_server(no_message())
         with self.assertRaises(ValueError):
+            analyze.chat(self.url, "m", "s", "u")
+
+    def test_context_full_with_length_is_context_full(self):
+        self.start_server(ok(prompt=analyze.NUM_CTX - 10, ev=10, done_reason="length"))
+        with self.assertRaises(analyze.ContextFullError):
             analyze.chat(self.url, "m", "s", "u")
 
     def test_context_just_below_limit_ok(self):
@@ -919,7 +926,7 @@ class MainTest(FakeServerMixin, unittest.TestCase):
         self.add_report("palvelin", "20261001-000000")
         self.run_main()
         system = self.requests[0][1]["messages"][0]["content"]
-        self.assertEqual(system, analyze.SYSTEM_PROMPT + "\nKnown issues:\nnone\n")
+        self.assertEqual(system, analyze.SYSTEM_PROMPT + "\nKnown issues:\nnone, so known is false for every issue\n")
 
     def test_model_option(self):
         self.start_server(ok())
