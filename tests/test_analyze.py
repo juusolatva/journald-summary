@@ -580,6 +580,7 @@ class ChatTest(FakeServerMixin, unittest.TestCase):
         self.assertEqual(body["model"], "model:x")
         self.assertIs(body["stream"], False)
         self.assertEqual(body["format"], analyze.SCHEMA)
+        self.assertIs(body["think"], False)
         self.assertEqual(body["options"], {"num_ctx": analyze.NUM_CTX, "temperature": 0})
         self.assertEqual([m["role"] for m in body["messages"]], ["system", "user"])
         self.assertEqual(body["messages"][0]["content"], "SYS")
