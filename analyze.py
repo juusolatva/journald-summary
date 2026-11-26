@@ -29,15 +29,15 @@ DEFAULT_REPORT_DIR = "/var/lib/logfilter/reports"
 
 # Ollama server (native API) and model.
 DEFAULT_URL = "http://localhost:11434"
-DEFAULT_MODEL = "qwen3:4b-instruct-2507-q8_0"
+DEFAULT_MODEL = "gemma4:e4b"
 
 # Context window requested from Ollama, in tokens.
-NUM_CTX = 16384
+NUM_CTX = 8192
 
 # Maximum characters of report text (or of chunk analyses to merge) per request.
 # Report text is about 3 characters per token, so this leaves room for the
 # prompt and the answer.
-CHUNK_CHARS = 20000
+CHUNK_CHARS = 12000
 
 # One known issue per line; empty lines and lines starting with # are ignored.
 KNOWN_ISSUES = "/etc/logfilter/known-issues.txt"
@@ -299,6 +299,7 @@ def chat(url, model, system, user):
         "messages": [{"role": "system", "content": system}, {"role": "user", "content": wrap_data(user)}],
         "stream": False,
         "format": SCHEMA,
+        "think": False,  # thinking models would spend the context on free-text reasoning
         "options": {"num_ctx": NUM_CTX, "temperature": 0},
     }
     req = urllib.request.Request(

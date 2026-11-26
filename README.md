@@ -142,14 +142,14 @@ sudo ./analyze.py [HOST ...] [--report-dir PATH] [--url URL] [--model MODEL] [--
 | `HOST ...` | Hosts to process. Default: every directory in the report directory. |
 | `--report-dir PATH` | Report directory. Default: `/var/lib/logfilter/reports`. |
 | `--url URL` | Ollama server, an `http://` or `https://` URL with a host (anything else exits with status 2). Default: `http://localhost:11434`. |
-| `--model MODEL` | Ollama model. Default: `qwen3:4b-instruct-2507-q8_0`. |
+| `--model MODEL` | Ollama model. Default: `gemma4:e4b`. |
 | `--known-issues PATH` | Known issues file. Default: `/etc/logfilter/known-issues.txt`. |
 
 How it works:
 
 - Reports are processed oldest first within each host. If the report directory does not exist yet, there is nothing to analyze and the exit status is 0; if it cannot be read (for example, it is a file), the exit status is 2. A file without a report header (for example an empty one) fails like an unreadable report instead of being analyzed as "no issues". A report with no selected patterns gets its analysis file without calling the model. If the report read no journal entries at all (`entries read: 0`), that analysis has a high-severity "No journal entries received" issue, because the host may be down or its logs may have stopped arriving.
 - A report that fits in `CHUNK_CHARS` is sent in one request. A larger one is split between pattern blocks, each chunk repeating the report header, and merge requests combine the chunk results into one analysis. Each merge request takes as many chunk results as fit in `CHUNK_CHARS` (at least two), and merging repeats until one analysis is left.
-- Requests go to `/api/chat` with a JSON schema as `format`, temperature 0 and `num_ctx` set to `NUM_CTX`. A reply is accepted only if it is a finished response, matches the schema (with text that can be written as UTF-8), generation was not cut short and the context window was not full. Proxy environment variables are ignored. Model text is written on one line in the analysis file, with newlines as ` | ` and control characters escaped, so it cannot add issue lines.
+- Requests go to `/api/chat` with a JSON schema as `format`, thinking off (`think: false`), temperature 0 and `num_ctx` set to `NUM_CTX`. A reply is accepted only if it is a finished response, matches the schema (with text that can be written as UTF-8), generation was not cut short and the context window was not full. Proxy environment variables are ignored. Model text is written on one line in the analysis file, with newlines as ` | ` and control characters escaped, so it cannot add issue lines.
 - Report text is log text that any program or user on a host can write, so each request puts it between `<data-ID>` and `</data-ID>` lines with a new random ID, and the prompts tell the model that this text is data, never instructions. This makes injected instructions in log lines less likely to steer the analysis, but cannot rule it out.
 - Each request is tried up to three times (`RETRY_DELAYS`), except that a full context window fails at once, because the same request would fail the same way. If Ollama cannot be reached, the run stops and leaves the remaining reports for the next run. If a report cannot be read or its replies stay invalid, that report is skipped and the others continue; once it is `GIVE_UP_DAYS` (3) days old by its file name, it gets an analysis file with a "Report could not be analyzed" issue instead and is no longer retried. In all these cases the exit status is 1.
 - The known issues file has one issue per line (empty lines and lines starting with `#` are ignored), for example `palvelin: ata1 SATA link errors (SSD port, cable being checked)`. The model marks matching issues as known instead of leaving them out. A missing file means no known issues.
@@ -158,7 +158,7 @@ Example analysis (synthetic data):
 
 ```
 === palvelin 20261007-000000 ===
-model: qwen3:4b-instruct-2507-q8_0
+model: gemma4:e4b
 chunks: 1
 summary: One unit failed; nginx could not reach its upstream for 20 minutes.
 
