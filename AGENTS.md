@@ -10,12 +10,15 @@ The goal is to spot software and hardware problems (failed units, crashes, disk,
 
 Stage 2, `analyze.py`, reads the report files and sends them, in chunks when needed, to a local LLM (Ollama native HTTP API, `http://localhost:11434` by default), retrying until analysis succeeds or the report is `GIVE_UP_DAYS` old. It writes `<report-dir>/<host>/<YYYYmmdd-HHMMSS>.analysis.txt` next to each report; a report counts as analyzed when that file exists. It runs via `systemd/analyze.service`, which `logfilter.service` pulls in. All LLM and HTTP code belongs in `analyze.py`; `logfilter.py` never calls an LLM or the network.
 
+`known_issues.py` is an interactive helper run by hand: it reads recent analysis files, asks about each issue not marked `[known]`, and appends the chosen lines to the known issues file that `analyze.py` reads. It never calls an LLM or the network.
+
 ## Repository map
 
 - `logfilter.py`: configuration, normalization, journal entry helpers, state files, and main processing. `process_host()` coordinates journal reading, report output, and state saving.
 - `analyze.py`: configuration and prompts, report parsing and chunking, Ollama requests and retries, and main processing.
 - `systemd/`: daily logfilter timer and the two services.
-- `tests/test_logfilter.py`, `tests/test_analyze.py`: synthetic unit and integration tests, also collected by pytest through `pytest.ini`.
+- `known_issues.py`: configuration, analysis file parsing and candidate collection, file appends, questions, and main processing.
+- `tests/test_logfilter.py`, `tests/test_analyze.py`, `tests/test_known_issues.py`: synthetic unit and integration tests, also collected by pytest through `pytest.ini`.
 - `pyproject.toml`: Ruff and coverage settings. `requirements-dev.txt` and `requirements-dev.lock`: development tools and their hashed lock. `.github/` and `sonar-project.properties`: CI and dependency updates.
 
 ## CLI
@@ -35,6 +38,14 @@ Stage 2, `analyze.py`, reads the report files and sends them, in chunks when nee
 - `--model <name>`: Ollama model (default: `gemma4:e4b`).
 - `--known-issues <path>`: known issues file, one issue per line, empty lines and `#` lines ignored (default: `/etc/logfilter/known-issues.txt`).
 
+`known_issues.py`:
+
+- `hosts`: optional positional host names (default: every subdirectory of the report directory). A host without a report directory is an error (exit status 2).
+- `--report-dir <path>`: report directory (default: `/var/lib/logfilter/reports`).
+- `--known-issues <path>`: known issues file to append to (default: `/etc/logfilter/known-issues.txt`).
+- `--reviewed <path>`: answered issues, one `<host>: <title>` per line (default: the known issues path with its extension replaced by `.reviewed`).
+- `--days <n>`: read analyses whose report time (file name) is at most this many days old (default: `DEFAULT_DAYS`, 7). Negative is an error (exit status 2).
+
 ## Environment
 
 - Runs on `palvelin` (openSUSE Tumbleweed), the central server.
@@ -46,7 +57,7 @@ Stage 2, `analyze.py`, reads the report files and sends them, in chunks when nee
 
 ## Hard constraints
 
-- Python 3.13 or newer, standard library only, for `logfilter.py`, `analyze.py` and the tests (no runtime dependencies, so there is no `requirements.txt`: Semgrep Supply Chain fails to parse a requirements file with no requirements). No third-party packages, no `python-systemd`, no other languages. The only exception is development and CI tooling (`pytest`, `pytest-cov`, `ruff`) in `requirements-dev.txt`, pinned with hashes in `requirements-dev.lock`; never import it from the scripts or tests.
+- Python 3.13 or newer, standard library only, for `logfilter.py`, `analyze.py`, `known_issues.py` and the tests (no runtime dependencies, so there is no `requirements.txt`: Semgrep Supply Chain fails to parse a requirements file with no requirements). No third-party packages, no `python-systemd`, no other languages. The only exception is development and CI tooling (`pytest`, `pytest-cov`, `ruff`) in `requirements-dev.txt`, pinned with hashes in `requirements-dev.lock`; never import it from the scripts or tests.
 - Read the journal only through `journalctl --output=json` via `subprocess`. Never parse `journalctl` text output: it is locale-dependent (palvelin prints Finnish month names such as `loka` and `syys`).
 - Keep `--all` in the journalctl command; without it, fields larger than 4096 bytes can be returned as null.
 - The command requests only `JOURNAL_FIELDS` with `--output-fields` (JSON output always adds `__CURSOR` and `__REALTIME_TIMESTAMP`), so large unused fields are never read. Add a field there when the code starts reading it; `ReadJournalTest` checks every `entry.get()` field against the list.
@@ -60,7 +71,7 @@ Stage 2, `analyze.py`, reads the report files and sends them, in chunks when nee
   2. `NOISE`: match drops entry if no rule matched (even if matching `ALWAYS_INCLUDE`).
   3. Priority selection: entry is selected if `PRIORITY <= MAX_PRIORITY` or if it matches `ALWAYS_INCLUDE`.
 - Keep all configuration settings (`REMOTE_DIR`, `DEFAULT_STATE_DIR`, `INITIAL_SINCE`, `MAX_PRIORITY`) and tunable lists (`HOSTS`, `RULES`, `ALWAYS_INCLUDE`, `NOISE`, `EXTRA_NORMALIZERS`) in the configuration section at the top of the file.
-- Keep `logfilter.py` and `analyze.py` single scripts (plus the systemd units in `systemd/`) unless asked otherwise. `analyze.py` also uses the standard library only (`urllib.request` for HTTP), keeps its settings and prompts in its configuration section, and writes analysis files atomically.
+- Keep `logfilter.py`, `analyze.py` and `known_issues.py` single scripts (plus the systemd units in `systemd/`) unless asked otherwise. `analyze.py` also uses the standard library only (`urllib.request` for HTTP), keeps its settings and prompts in its configuration section, and writes analysis files atomically.
 
 ## Code conventions and invariants
 
@@ -105,6 +116,7 @@ Journal-derived text (`<source>`, `<normalized_template>`, `<sample_message>`) m
 - A report whose header lacks `=== ` or `entries read:` (empty or damaged file) is a `ValueError`, never "no issues". Reports with no selected patterns are analyzed without Ollama (`model: -`, `chunks: 0`). A report with `entries read: 0` must produce the high-severity "No journal entries received" issue rather than "no issues".
 - `chat()` uses `/api/chat`, `stream: false`, `format: SCHEMA`, `think: false`, temperature 0 and `num_ctx: NUM_CTX`, through `OPENER`, which ignores proxy environment variables; an HTTP error's message includes the start of its body (`ERROR_BODY_LIMIT`). `reply_content()` and `validate()` reject (as `ValueError`) a reply that is not a finished (`done`) object, an explicit `done_reason` other than `stop`, non-integer token counts, prompt plus generated token counts reaching `NUM_CTX` (`ContextFullError`), a missing or non-string `message.content`, an invalid schema, or strings that cannot be encoded as UTF-8.
 - `render()` writes every model-supplied field (summary, title, details) through its `one_line()`: newlines become ` | ` and Cc/Cf/Zl/Zp characters except tab are escaped, so only `render()` starts analysis lines.
+- `known_issues.py` parses analysis files with `ISSUE_LINE`, which must match the issue headings `render()` writes (`[severity]`, optional ` [known]`, title, then one two-space-indented details line). Change both together. It skips analyses with `model: -`, appends to the known issues and reviewed files line by line (each answer is saved at once), and never rewrites them.
 - `wrap_data()` encloses every user message, including merge input, in `<data-ID>` and `</data-ID>` lines. Generate a fresh random ID absent from the text for each request; keep this marker format and both prompts in sync.
 - Each chunk request and merge request gets `1 + len(RETRY_DELAYS)` attempts, except that `ContextFullError` is raised at once (the same input fails the same way). After retries, `OSError` or `http.client.HTTPException` stops the run (including HTTP errors); `ValueError` or `KeyError` skips only the affected report, writing a failure analysis once it reaches `GIVE_UP_DAYS`. An unreachable server must never cause a report to be marked analyzed or given up on.
 
@@ -121,7 +133,7 @@ Journal-derived text (`<source>`, `<normalized_template>`, `<sample_message>`) m
 
 Do not run the script against real journals, and do not create or modify anything under `/var/lib/logfilter/`.
 
-Automated tests live in `tests/` (`test_logfilter.py`, `test_analyze.py`, standard library `unittest`, synthetic data only). Run them from the repository root after every change, and add or update tests along with any behavior change:
+Automated tests live in `tests/` (`test_logfilter.py`, `test_analyze.py`, `test_known_issues.py`, standard library `unittest`, synthetic data only). Run them from the repository root after every change, and add or update tests along with any behavior change:
 
 ```
 python3 -m unittest discover -s tests -v
@@ -150,11 +162,11 @@ Test `analyze.py` with a fake Ollama server (a small `http.server` script answer
 Syntax check command:
 
 ```
-python3 -m py_compile logfilter.py analyze.py
+python3 -m py_compile logfilter.py analyze.py known_issues.py
 ```
 - `python3`: Python interpreter executable.
 - `-m py_compile`: executes standard library module `py_compile` to compile source code to bytecode.
-- `logfilter.py analyze.py`: target script files to check.
+- `logfilter.py analyze.py known_issues.py`: target script files to check.
 
 ## Test data
 
