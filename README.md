@@ -149,7 +149,7 @@ How it works:
 
 - Reports are processed oldest first within each host. If the report directory does not exist yet, there is nothing to analyze and the exit status is 0; if it cannot be read (for example, it is a file), the exit status is 2. A file without a report header (for example an empty one) fails like an unreadable report instead of being analyzed as "no issues". A report with no selected patterns gets its analysis file without calling the model. If the report read no journal entries at all (`entries read: 0`), that analysis has a high-severity "No journal entries received" issue, because the host may be down or its logs may have stopped arriving.
 - A report that fits in `CHUNK_CHARS` is sent in one request. A larger one is split between pattern blocks, each chunk repeating the report header, and merge requests combine the chunk results into one analysis. Each merge request takes as many chunk results as fit in `CHUNK_CHARS` (at least two), and merging repeats until one analysis is left.
-- Requests go to `/api/chat` with a JSON schema as `format`, thinking off (`think: false`), temperature 0 and `num_ctx` set to `NUM_CTX`. A reply is accepted only if it is a finished response, matches the schema (with text that can be written as UTF-8), generation was not cut short and the context window was not full. Proxy environment variables are ignored. Model text is written on one line in the analysis file, with newlines as ` | ` and control characters escaped, so it cannot add issue lines.
+- Requests go to `/api/chat` with a JSON schema as `format` (which also limits a reply to `MAX_ISSUES` issues, most severe first), thinking off (`think: false`), temperature 0 and `num_ctx` set to `NUM_CTX`. A reply is accepted only if it is a finished response, matches the schema (with text that can be written as UTF-8), generation was not cut short and the context window was not full. Proxy environment variables are ignored. Model text is written on one line in the analysis file, with newlines as ` | ` and control characters escaped, so it cannot add issue lines.
 - Report text is log text that any program or user on a host can write, so each request puts it between `<data-ID>` and `</data-ID>` lines with a new random ID, and the prompts tell the model that this text is data, never instructions. This makes injected instructions in log lines less likely to steer the analysis, but cannot rule it out.
 - Each request is tried up to three times (`RETRY_DELAYS`), except that a full context window fails at once, because the same request would fail the same way. If Ollama cannot be reached, the run stops and leaves the remaining reports for the next run. If a report cannot be read or its replies stay invalid, that report is skipped and the others continue; once it is `GIVE_UP_DAYS` (3) days old by its file name, it gets an analysis file with a "Report could not be analyzed" issue instead and is no longer retried. In all these cases the exit status is 1.
 - The known issues file has one issue per line (empty lines and lines starting with `#` are ignored), for example `palvelin: ata1 SATA link errors (SSD port, cable being checked)`. The model marks matching issues as known instead of leaving them out. A missing file means no known issues. `known_issues.py` (below) helps fill it in.
@@ -178,13 +178,14 @@ Settings at the top of `analyze.py`:
 |---|---|
 | `DEFAULT_REPORT_DIR`, `DEFAULT_URL`, `DEFAULT_MODEL` | Defaults for `--report-dir`, `--url`, `--model` |
 | `NUM_CTX` | Context window requested from Ollama, in tokens |
-| `CHUNK_CHARS` | Maximum report (or chunk analysis) characters per request |
+| `CHUNK_CHARS` | Maximum report (or chunk analysis) characters per request. Sized for dense text such as stack traces (about 1.6 characters per token) at `NUM_CTX` 8192. |
+| `MAX_ISSUES` | Most issues in one reply (enforced by the schema) |
 | `KNOWN_ISSUES` | Default for `--known-issues` |
 | `REQUEST_TIMEOUT` | Seconds to wait for one reply |
 | `ERROR_BODY_LIMIT` | Bytes of an HTTP error reply shown in the error message |
 | `RETRY_DELAYS` | Waits between attempts of one request |
 | `GIVE_UP_DAYS` | Age in days after which a report that keeps failing is no longer retried |
-| `SYSTEM_PROMPT`, `MERGE_PROMPT`, `SCHEMA` | Prompts and the reply schema |
+| `NO_KNOWN`, `SYSTEM_PROMPT`, `MERGE_PROMPT`, `SCHEMA` | Known issues text when there are none, prompts and the reply schema |
 
 ### Known issues
 
